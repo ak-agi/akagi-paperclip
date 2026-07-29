@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpDown, Check, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
+import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { attentionApi } from "../api/attention";
@@ -36,10 +36,12 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { decisionTrainingHref } from "../lib/decisionTraining";
 import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
+import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
@@ -83,6 +85,8 @@ export function WhatNeedsMe() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
+  // Decision-training drawer target. `null` when closed.
+  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
@@ -358,6 +362,9 @@ export function WhatNeedsMe() {
     setSelectedAttentionId(item.id);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
   }, []);
+  const handleTrain = useCallback((item: AttentionItem) => {
+    setTrainingItem(item);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -479,6 +486,17 @@ export function WhatNeedsMe() {
               </div>
             </PopoverContent>
           </Popover>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            title="Training"
+            aria-label="Training"
+            onClick={() => navigate(decisionTrainingHref())}
+          >
+            <GraduationCap className="h-3.5 w-3.5" />
+          </Button>
           {/* Sort */}
           <Popover>
             <PopoverTrigger asChild>
@@ -551,6 +569,7 @@ export function WhatNeedsMe() {
                           onToggleExpand={handleToggleExpand}
                           onDismiss={handleDismiss}
                           onSnooze={handleSnooze}
+                          onTrain={handleTrain}
                           agentMap={agentMap}
                           currentUserId={currentUserId}
                           selected={selectedAttentionId === item.id}
@@ -612,6 +631,16 @@ export function WhatNeedsMe() {
           )}
         </div>
       )}
+
+      <DecisionTrainingDrawer
+        open={trainingItem !== null}
+        onOpenChange={(next) => {
+          if (!next) setTrainingItem(null);
+        }}
+        companyId={selectedCompanyId}
+        item={trainingItem}
+        currentUserId={currentUserId}
+      />
     </div>
   );
 }

@@ -5,6 +5,8 @@ export {
   type InstanceGeneralSettings,
   type PatchInstanceGeneralSettings,
   instanceExperimentalSettingsSchema,
+  instanceExperimentalSettingsWithManagedSchema,
+  managedSettingMetadataSchema,
   patchInstanceExperimentalSettingsSchema,
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
@@ -91,9 +93,25 @@ export {
 } from "./sidebar-preferences.js";
 export {
   resourceMembershipStateSchema,
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
+  type UpdateDocumentResourceMembership,
   type UpdateResourceMembership,
 } from "./resource-memberships.js";
+export {
+  generateSummarySlotSchema,
+  summarySlotKeySchema,
+  summarySlotQuerySchema,
+  summarySlotScopeKindSchema,
+  summarySlotScopeSelectorSchema,
+  summarySlotStatusSchema,
+  writeSummarySlotSchema,
+  type GenerateSummarySlotInput,
+  type SummarySlotScopeSelectorInput,
+  type WriteSummarySlotInput,
+} from "./summary-slot.js";
+
+export * from "./status-card.js";
 
 export {
   externalObjectStatusCategorySchema,
@@ -194,6 +212,23 @@ export {
   type CompanySkillInstallUpdate,
   type CompanySkillReset,
 } from "./company-skill.js";
+export {
+  folderKindSchema,
+  folderSlugSchema,
+  folderSchema,
+  folderListItemSchema,
+  folderListResultSchema,
+  createFolderSchema,
+  updateFolderSchema,
+  moveFolderSchema,
+  moveFolderItemSchema,
+  ensureMySkillFolderSchema,
+  type CreateFolder,
+  type UpdateFolder,
+  type MoveFolder,
+  type MoveFolderItem,
+  type EnsureMySkillFolder,
+} from "./folder.js";
 export {
   catalogTeamKindSchema,
   catalogTeamTrustLevelSchema,
@@ -386,6 +421,7 @@ export {
   acceptIssueThreadInteractionSchema,
   rejectIssueThreadInteractionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   respondIssueThreadInteractionSchema,
   submitIssueThreadInteractionVerdictsSchema,
   linkIssueApprovalSchema,
@@ -409,6 +445,7 @@ export {
   type AcceptIssueThreadInteraction,
   type RejectIssueThreadInteraction,
   type CancelIssueThreadInteraction,
+  type WithdrawIssueThreadInteraction,
   type RespondIssueThreadInteraction,
   type SubmitIssueThreadInteractionVerdicts,
   type LinkIssueApproval,
@@ -420,12 +457,19 @@ export {
 } from "./issue.js";
 
 export {
+  COMPANY_SEARCH_EXTRACT_DEFAULT_LIMIT,
+  COMPANY_SEARCH_EXTRACT_DEFAULT_MATCHES_PER_ISSUE,
+  COMPANY_SEARCH_EXTRACT_MAX_LIMIT,
+  COMPANY_SEARCH_EXTRACT_MAX_MATCHES_PER_ISSUE,
+  COMPANY_SEARCH_EXTRACT_MAX_OFFSET,
   COMPANY_SEARCH_DEFAULT_LIMIT,
   COMPANY_SEARCH_MAX_LIMIT,
   COMPANY_SEARCH_MAX_OFFSET,
   COMPANY_SEARCH_MAX_QUERY_LENGTH,
   COMPANY_SEARCH_MAX_TOKENS,
   companySearchQuerySchema,
+  companySearchExtractQuerySchema,
+  type CompanySearchExtractQuery,
   type CompanySearchQuery,
 } from "./search.js";
 
@@ -757,6 +801,8 @@ export {
   connectionTokenIssuancePathSchema,
   connectionTokenRequestSchema,
   connectionTokenScopeSchema,
+  connectionTokenSubjectSchema,
+  startConnectionAuthorizationSchema,
   createToolTrustRuleFromActionRequestSchema,
   revokeToolTrustRuleSchema,
   toolPolicyTestRequestSchema,
@@ -833,3 +879,5 @@ export {
   type CreateToolTrustRuleFromActionRequest,
   type RevokeToolTrustRule,
 } from "./tool-access.js";
+export * from "./skill-policy.js";
+export * from "./app-definition.js";

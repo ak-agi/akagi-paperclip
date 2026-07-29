@@ -142,7 +142,9 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const query = companyArtifactsQuerySchema.parse(req.query);
-    res.json(await artifacts.list(companyId, query));
+    res.json(await artifacts.list(companyId, query, {
+      userId: query.starred && req.actor.type === "board" ? req.actor.userId : undefined,
+    }));
   });
 
   router.get("/:companyId/timeline", async (req, res) => {
@@ -358,6 +360,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       entityId: result.company.id,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.imported",
       details: {
         include: body.include ?? null,
@@ -478,6 +481,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.updated",
         entityType: "company",
         entityId: companyId,
@@ -503,6 +507,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "company.branding_updated",
       entityType: "company",
       entityId: companyId,

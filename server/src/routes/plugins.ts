@@ -61,6 +61,7 @@ import type { PluginJobStore } from "../services/plugin-job-store.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import type { PluginStreamBus } from "../services/plugin-stream-bus.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
+import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import type { PluginPerformActionActorContext, ToolRunContext } from "@paperclipai/plugin-sdk";
 import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import {
@@ -83,6 +84,12 @@ import {
 import {
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import {
+  canonicalizeLocalPluginPath,
+  isCloudManagedInstance,
+  isWithinBundledPluginRoot,
+} from "../services/plugin-install-guard.js";
+import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
 
 /** UI slot declaration extracted from plugin manifest */
@@ -421,6 +428,10 @@ export interface PluginRouteBridgeDeps {
   streamBus?: PluginStreamBus;
 }
 
+export interface PluginRouteToolGatewayDeps {
+  toolGateway: ToolGatewayService;
+}
+
 interface PluginScopedApiRequest {
   routeKey: string;
   method: string;
@@ -506,6 +517,7 @@ export function pluginRoutes(
   webhookDeps?: PluginRouteWebhookDeps,
   toolDeps?: PluginRouteToolDeps,
   bridgeDeps?: PluginRouteBridgeDeps,
+  toolGatewayDeps?: PluginRouteToolGatewayDeps,
 ) {
   const router = Router();
   const registry = pluginRegistryService(db);
@@ -690,6 +702,7 @@ export function pluginRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action,
         entityType: "plugin",
         entityId,
@@ -707,6 +720,35 @@ export function pluginRoutes(
     }
     assertCompanyAccess(req, companyId);
     return companyId;
+  }
+
+  function requirePluginConfigCompanyId(req: Request, companyId: unknown): string {
+    if (typeof companyId !== "string" || companyId.trim().length === 0) {
+      throw badRequest('"companyId" is required and must be a non-empty string');
+    }
+    const scopedCompanyId = companyId.trim();
+    assertCompanyAccess(req, scopedCompanyId);
+    return scopedCompanyId;
+  }
+
+  async function validatePluginSecretRefsForCompany(
+    companyId: string,
+    refs: ReturnType<typeof extractSecretRefBindingsFromConfig>,
+  ): Promise<void> {
+    if (refs.length === 0) return;
+    const secretsSvc = secretService(db);
+    const checked = new Set<string>();
+    for (const ref of refs) {
+      if (checked.has(ref.secretId)) continue;
+      checked.add(ref.secretId);
+      const secret = await secretsSvc.getById(ref.secretId);
+      if (!secret || secret.companyId !== companyId) {
+        throw unprocessable("Plugin config references a secret outside the selected company");
+      }
+      if (secret.status === "deleted") {
+        throw unprocessable("Plugin config references a deleted secret");
+      }
+    }
   }
 
   function performActionActorContext(req: Request, companyId: string | undefined): PluginPerformActionActorContext {
@@ -914,6 +956,19 @@ export function pluginRoutes(
     }
 
     const pluginId = req.query.pluginId as string | undefined;
+    if (req.actor.type === "agent" && toolGatewayDeps) {
+      if (!req.actor.companyId || !req.actor.agentId) {
+        res.status(401).json({ error: "Agent identity is required" });
+        return;
+      }
+      const tools = await toolGatewayDeps.toolGateway.listPluginToolsForAgent({
+        companyId: req.actor.companyId,
+        agentId: req.actor.agentId,
+      });
+      res.json(pluginId ? tools.filter((tool) => tool.pluginId === pluginId || tool.name.startsWith(`${pluginId}:`)) : tools);
+      return;
+    }
+
     const filter = pluginId ? { pluginId } : undefined;
     const tools = toolDeps.toolDispatcher.listToolsForAgent(filter);
     res.json(tools);
@@ -980,6 +1035,35 @@ export function pluginRoutes(
       return;
     }
 
+    if (req.actor.type === "agent" && toolGatewayDeps) {
+      try {
+        const result = await toolGatewayDeps.toolGateway.executePluginTool({
+          actor: {
+            type: "agent",
+            agentId: req.actor.agentId,
+            companyId: req.actor.companyId,
+            runId: req.actor.runId ?? null,
+          },
+          tool,
+          parameters: parameters ?? {},
+          runContext,
+        });
+        res.json(result);
+      } catch (err) {
+        if (err instanceof ToolGatewayHttpError) {
+          res.status(err.status).json({ error: err.message, reasonCode: err.reasonCode, ...err.details });
+          return;
+        }
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("not running") || message.includes("worker")) {
+          res.status(502).json({ error: message });
+        } else {
+          res.status(500).json({ error: message });
+        }
+      }
+      return;
+    }
+
     // Verify the tool exists
     const registeredTool = toolDeps.toolDispatcher.getTool(tool);
     if (!registeredTool) {
@@ -1025,10 +1109,18 @@ export function pluginRoutes(
    * 3. Registers in the database
    * 4. Transitions to `ready` state if no new capability approval is needed
    *
+   * Cloud-managed instances (identified by the harness-injected
+   * `PAPERCLIP_MANAGED_CONFIG` environment variable) enforce a positive
+   * allowlist: only local paths that canonicalize to a directory inside the
+   * bundled plugin catalog root may be installed. npm/registry installs and
+   * arbitrary local paths are rejected with `403`. Local paths are
+   * canonicalized and validated on every instance.
+   *
    * Response: `PluginRecord`
    *
    * Errors:
    * - `400` — validation failure or install error (package not found, bad manifest, etc.)
+   * - `403` — install source not permitted on a cloud-managed instance
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
@@ -1064,9 +1156,39 @@ export function pluginRoutes(
       return;
     }
 
+    // Cloud install floor: on harness-managed instances only bundled-catalog
+    // sources are installable, regardless of actor privileges or flag state.
+    const cloudManaged = isCloudManagedInstance();
+    if (cloudManaged && !isLocalPath) {
+      res.status(403).json({
+        error:
+          "npm installs are disabled on cloud-managed instances; only plugins bundled with the application may be installed",
+      });
+      return;
+    }
+
+    // Canonicalize local install paths on every instance so traversal
+    // segments and symlinks cannot smuggle an aliased path past validation.
+    let canonicalLocalPath: string | undefined;
+    if (isLocalPath) {
+      const validated = await canonicalizeLocalPluginPath(trimmedPackage);
+      if (!validated.ok) {
+        res.status(400).json({ error: `Invalid localPath: ${validated.reason}` });
+        return;
+      }
+      if (cloudManaged && !(await isWithinBundledPluginRoot(validated.canonicalPath))) {
+        res.status(403).json({
+          error:
+            "cloud-managed instances may only install plugins from the bundled plugin catalog",
+        });
+        return;
+      }
+      canonicalLocalPath = validated.canonicalPath;
+    }
+
     try {
-      const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+      const installOptions = canonicalLocalPath !== undefined
+        ? { localPath: canonicalLocalPath }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
@@ -2121,7 +2243,7 @@ export function pluginRoutes(
   /**
    * GET /api/plugins/:pluginId/config
    *
-   * Retrieve the current instance configuration for a plugin.
+   * Retrieve the current company-scoped configuration for a plugin.
    *
    * Returns the `PluginConfig` record if one exists, or `null` if the plugin
    * has not yet been configured.
@@ -2132,11 +2254,7 @@ export function pluginRoutes(
   router.get("/plugins/:pluginId/config", async (req, res) => {
     assertBoardOrgAccess(req);
     const { pluginId } = req.params;
-    const companyId = typeof req.query.companyId === "string" ? req.query.companyId.trim() : "";
-    if (!companyId) {
-      throw badRequest('"companyId" is required and must be a non-empty string');
-    }
-    assertCompanyAccess(req, companyId);
+    const companyId = requirePluginConfigCompanyId(req, req.query.companyId);
 
     const plugin = await resolvePlugin(registry, pluginId);
     if (!plugin) {
@@ -2151,12 +2269,13 @@ export function pluginRoutes(
   /**
    * POST /api/plugins/:pluginId/config
    *
-   * Save (create or replace) the instance configuration for a plugin.
+   * Save (create or replace) the company-scoped configuration for a plugin.
    *
    * The caller provides the full `configJson` object. The server persists it
    * via `registry.upsertConfig()`.
    *
    * Request body:
+   * - `companyId`: Company that owns this plugin config row
    * - `configJson`: Configuration values matching the plugin's `instanceConfigSchema`
    *
    * Response: `PluginConfig`
@@ -2174,13 +2293,9 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { companyId?: string; configJson?: Record<string, unknown> } | undefined;
-    const companyId = typeof body?.companyId === "string" ? body.companyId.trim() : "";
-    if (!companyId) {
-      throw badRequest('"companyId" is required and must be a non-empty string');
-    }
-    assertCompanyAccess(req, companyId);
-    if (!body?.configJson || typeof body.configJson !== "object") {
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
@@ -2211,10 +2326,13 @@ export function pluginRoutes(
 
     try {
       const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
-      if (secretRefs.length > 0) {
-        res.status(422).json({ error: "Plugin secret references require the governed tool-access server layer" });
-        return;
-      }
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+      await secretService(db).syncSecretRefsForTarget(
+        companyId,
+        { targetType: "plugin", targetId: plugin.id },
+        secretRefs,
+        { replaceAll: true },
+      );
 
       const result = await registry.upsertConfig(plugin.id, companyId, {
         companyId,
@@ -2223,6 +2341,8 @@ export function pluginRoutes(
       await logPluginMutationActivity(req, "plugin.config.updated", plugin.id, {
         pluginId: plugin.id,
         pluginKey: plugin.pluginKey,
+        companyId,
+        secretRefCount: secretRefs.length,
         configKeyCount: Object.keys(body.configJson).length,
       });
 
@@ -2231,6 +2351,20 @@ export function pluginRoutes(
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
       if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        // Refresh the worker's authorized proactive company scopes so the
+        // just-configured company can be acted on from proactive loops (e.g.
+        // the chat gateway's notifier drain) without requiring a restart
+        // (LOOA-629). The set is exactly the plugin's configured companies.
+        try {
+          const configRows = await registry.listConfigs(plugin.id);
+          bridgeDeps.workerManager.setProactiveCompanyScopes(
+            plugin.id,
+            configRows.map((row) => row.companyId),
+          );
+        } catch {
+          // Non-fatal: the set is rebuilt from the DB on the next worker start.
+        }
+
         try {
           await bridgeDeps.workerManager.call(
             plugin.id,
@@ -2304,8 +2438,9 @@ export function pluginRoutes(
       return;
     }
 
-    const body = req.body as { configJson?: Record<string, unknown> } | undefined;
-    if (!body?.configJson || typeof body.configJson !== "object") {
+    const body = req.body as { companyId?: unknown; configJson?: Record<string, unknown> } | undefined;
+    const companyId = requirePluginConfigCompanyId(req, body?.companyId);
+    if (!body?.configJson || typeof body.configJson !== "object" || Array.isArray(body.configJson)) {
       res.status(400).json({ error: '"configJson" is required and must be an object' });
       return;
     }
@@ -2324,6 +2459,9 @@ export function pluginRoutes(
     }
 
     try {
+      const secretRefs = extractSecretRefBindingsFromConfig(body.configJson, schema);
+      await validatePluginSecretRefsForCompany(companyId, secretRefs);
+
       const result = await bridgeDeps.workerManager.call(
         plugin.id,
         "validateConfig",
