@@ -30,7 +30,14 @@ vi.mock("@paperclipai/adapter-utils/execution-target", () => ({
   runAdapterExecutionTargetProcess: runProcessMock,
 }));
 
-import { execute, prependLocalBinToPath, resolveGrokHeadlessPermissionMode, resolvePathEnvKey } from "./execute.js";
+import {
+  applyLocalBinPathForExecution,
+  execute,
+  prependLocalBinToPath,
+  resolveGrokHeadlessPermissionMode,
+  resolveHomeDir,
+  resolvePathEnvKey,
+} from "./execute.js";
 
 const tempRoots: string[] = [];
 
@@ -349,6 +356,20 @@ describe("resolveGrokHeadlessPermissionMode", () => {
   });
 });
 
+describe("resolveHomeDir", () => {
+  it("prefers HOME over USERPROFILE", () => {
+    expect(resolveHomeDir({ HOME: "/home/dev", USERPROFILE: "C:\\Users\\dev" })).toBe("/home/dev");
+  });
+
+  it("falls back to USERPROFILE when HOME is unset", () => {
+    expect(resolveHomeDir({ USERPROFILE: "C:\\Users\\dev" })).toBe("C:\\Users\\dev");
+  });
+
+  it("falls back to os.homedir() when HOME and USERPROFILE are unset", () => {
+    expect(resolveHomeDir({})).toBe(os.homedir());
+  });
+});
+
 describe("prependLocalBinToPath", () => {
   it("prepends $HOME/.local/bin ahead of the existing PATH", () => {
     const result = prependLocalBinToPath({ HOME: "/paperclip", PATH: "/usr/local/bin:/usr/bin" });
@@ -360,9 +381,14 @@ describe("prependLocalBinToPath", () => {
     expect(prependLocalBinToPath(env)).toBe(env);
   });
 
-  it("returns the env unchanged when HOME is not set", () => {
-    const env = { PATH: "/usr/bin" };
-    expect(prependLocalBinToPath(env)).toBe(env);
+  it("falls back to USERPROFILE when HOME is unset", () => {
+    const result = prependLocalBinToPath({ USERPROFILE: "/Users/dev", PATH: "/usr/bin" });
+    expect(result.PATH).toBe(`${path.join("/Users/dev", ".local", "bin")}${path.delimiter}/usr/bin`);
+  });
+
+  it("falls back to os.homedir() when HOME and USERPROFILE are unset", () => {
+    const result = prependLocalBinToPath({ PATH: "/usr/bin" });
+    expect(result.PATH).toBe(`${path.join(os.homedir(), ".local", "bin")}${path.delimiter}/usr/bin`);
   });
 
   it("sets PATH to just the local bin when PATH is empty", () => {
@@ -373,6 +399,30 @@ describe("prependLocalBinToPath", () => {
     const result = prependLocalBinToPath({ HOME: "/home/dev", Path: "/usr/bin" });
     expect(result.Path).toBe(`/home/dev/.local/bin${path.delimiter}/usr/bin`);
     expect(result.PATH).toBeUndefined();
+  });
+});
+
+describe("applyLocalBinPathForExecution", () => {
+  it("puts PATH only on spawnEnv for local targets, not on configEnv", () => {
+    const configEnv = { PAPERCLIP_RUN_ID: "run-1" };
+    const { spawnEnv, runtimeEnv } = applyLocalBinPathForExecution({
+      configEnv,
+      processEnv: { HOME: "/custom/home", PATH: "/usr/bin" },
+      isRemote: false,
+    });
+    expect(configEnv.PATH).toBeUndefined();
+    expect(spawnEnv.PATH?.startsWith(path.join("/custom/home", ".local", "bin"))).toBe(true);
+    expect(runtimeEnv.PATH?.startsWith(path.join("/custom/home", ".local", "bin"))).toBe(true);
+    expect(spawnEnv.PAPERCLIP_RUN_ID).toBe("run-1");
+  });
+
+  it("does not put PATH on spawnEnv for remote targets", () => {
+    const { spawnEnv } = applyLocalBinPathForExecution({
+      configEnv: { PAPERCLIP_RUN_ID: "run-1" },
+      processEnv: { HOME: "/custom/home", PATH: "/usr/bin" },
+      isRemote: true,
+    });
+    expect(spawnEnv.PATH).toBeUndefined();
   });
 });
 

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -98,8 +99,23 @@ export function resolvePathEnvKey(env: NodeJS.ProcessEnv): "PATH" | "Path" {
   return "PATH";
 }
 
+/** Resolve a usable home directory from env, with Windows + host fallbacks. */
+export function resolveHomeDir(env: NodeJS.ProcessEnv): string {
+  for (const key of ["HOME", "USERPROFILE"] as const) {
+    const value = typeof env[key] === "string" ? env[key]!.trim() : "";
+    if (value) return value;
+  }
+  try {
+    const home = os.homedir().trim();
+    if (home) return home;
+  } catch {
+    // os.homedir() can throw when the OS has no home concept for this process.
+  }
+  return "";
+}
+
 export function prependLocalBinToPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const home = typeof env.HOME === "string" ? env.HOME.trim() : "";
+  const home = resolveHomeDir(env);
   if (!home) return env;
   const localBin = path.join(home, ".local", "bin");
   const pathKey = resolvePathEnvKey(env);
@@ -107,6 +123,42 @@ export function prependLocalBinToPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv
   const entries = currentPath.split(path.delimiter).filter(Boolean);
   if (entries.includes(localBin)) return env;
   return { ...env, [pathKey]: [localBin, ...entries].join(path.delimiter) };
+}
+
+/**
+ * Apply the local-only `$HOME/.local/bin` PATH prepend for resolvability + spawn.
+ * Remote targets keep the remote profile's PATH untouched.
+ * Returns `{ runtimeEnv, spawnEnv }` where `spawnEnv` carries any PATH override
+ * and `configEnv` (the original agent env) is left unmodified so invocation logs
+ * do not grow a full host PATH.
+ */
+export function applyLocalBinPathForExecution(input: {
+  configEnv: Record<string, string>;
+  processEnv?: NodeJS.ProcessEnv;
+  isRemote: boolean;
+}): {
+  runtimeEnv: NodeJS.ProcessEnv;
+  spawnEnv: Record<string, string>;
+} {
+  const { configEnv, isRemote } = input;
+  const processEnv = input.processEnv ?? process.env;
+  const effectiveEnv = Object.fromEntries(
+    Object.entries({ ...processEnv, ...configEnv }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const runtimeEnv = isRemote
+    ? ensurePathInEnv(effectiveEnv)
+    : prependLocalBinToPath(ensurePathInEnv(effectiveEnv));
+  const spawnEnv: Record<string, string> = { ...configEnv };
+  if (!isRemote) {
+    const pathKey = resolvePathEnvKey(runtimeEnv);
+    const prependedPath = runtimeEnv[pathKey];
+    if (typeof prependedPath === "string") {
+      spawnEnv[pathKey] = prependedPath;
+    }
+  }
+  return { runtimeEnv, spawnEnv };
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -400,30 +452,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-    const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
     // The `$HOME/.local/bin` prepend is a *local*-execution concern: it targets the
     // grok binary on this Paperclip host. For remote (e.g. SSH) targets the binary lives
     // under the remote user's home and the remote profile owns PATH, so injecting this
     // host's PATH would clobber the remote one and break resolution. Only prepend locally.
-    const runtimeEnv = executionTargetIsRemote
-      ? ensurePathInEnv(effectiveEnv)
-      : prependLocalBinToPath(ensurePathInEnv(effectiveEnv));
-    // The process below is spawned with `env` (runChildProcess merges it over
-    // process.env), so the local-bin prepend must be reflected there too. Otherwise the
-    // resolvability preflight passes using runtimeEnv while the actual Grok process still
-    // launches with the un-prepended PATH and can fail to find `grok`. Copy whichever
-    // path key was actually updated (`PATH` on POSIX, `Path` on Windows).
-    if (!executionTargetIsRemote) {
-      const pathKey = resolvePathEnvKey(runtimeEnv);
-      const prependedPath = runtimeEnv[pathKey];
-      if (typeof prependedPath === "string") {
-        env[pathKey] = prependedPath;
-      }
-    }
+    // Spawn gets the PATH override via `spawnEnv`; `env` (config/Paperclip keys) stays
+    // free of a full host PATH so invocation logs keep their previous surface area.
+    const { runtimeEnv, spawnEnv } = applyLocalBinPathForExecution({
+      configEnv: env,
+      isRemote: executionTargetIsRemote,
+    });
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
       installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
       timeoutSec,
@@ -434,7 +472,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
-    const billingType = resolveBillingType(effectiveEnv);
+    const billingType = resolveBillingType(runtimeEnv);
 
     const runtimeSessionParams = parseObject(runtime.sessionParams);
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -547,7 +585,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
-        env,
+        env: spawnEnv,
         timeoutSec,
         graceSec,
         onSpawn,

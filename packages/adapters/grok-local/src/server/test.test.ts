@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 
 const ensureDirectoryMock = vi.hoisted(() => vi.fn(async () => {}));
@@ -96,13 +97,99 @@ describe("grok_local testEnvironment", () => {
         "streaming-json",
         "--always-approve",
         "--permission-mode",
-        "dontAsk",
+        "bypassPermissions",
         "--disable-web-search",
         "--single",
         "Respond with exactly hello.",
       ]),
       expect.any(Object),
     );
+  });
+
+  it("remaps dontAsk on the hello probe and prepends $HOME/.local/bin for local targets", async () => {
+    vi.stubEnv("HOME", "/custom/home");
+    vi.stubEnv("PATH", "/usr/bin");
+    try {
+      runProcessMock
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "You are logged in with grok.com.\nDefault model: grok-build\nAvailable models:\n  * grok-build",
+          stderr: "",
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: [
+            JSON.stringify({ type: "text", data: "hello" }),
+            JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1", requestId: "req-1" }),
+          ].join("\n"),
+          stderr: "",
+        });
+
+      await testEnvironment({
+        companyId: "company-1",
+        adapterType: "grok_local",
+        config: {
+          command: "grok",
+          cwd: "/tmp/project",
+          permissionMode: "dontAsk",
+        },
+      });
+
+      const modelsCall = runProcessMock.mock.calls[0];
+      const helloCall = runProcessMock.mock.calls[1];
+      expect(modelsCall?.[4]?.env?.PATH?.startsWith(path.join("/custom/home", ".local", "bin"))).toBe(true);
+      expect(helloCall?.[4]?.env?.PATH?.startsWith(path.join("/custom/home", ".local", "bin"))).toBe(true);
+      expect(helloCall?.[3]).toEqual(
+        expect.arrayContaining(["--permission-mode", "bypassPermissions"]),
+      );
+      expect(helloCall?.[3]).not.toContain("dontAsk");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not inject host PATH into remote environment test spawns", async () => {
+    vi.stubEnv("HOME", "/custom/home");
+    vi.stubEnv("PATH", "/usr/bin");
+    try {
+      runProcessMock
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "You are logged in with grok.com.\nDefault model: grok-build\nAvailable models:\n  * grok-build",
+          stderr: "",
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: [
+            JSON.stringify({ type: "text", data: "hello" }),
+            JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1", requestId: "req-1" }),
+          ].join("\n"),
+          stderr: "",
+        });
+
+      await testEnvironment({
+        companyId: "company-1",
+        adapterType: "grok_local",
+        config: {
+          command: "grok",
+          cwd: "/tmp/project",
+        },
+        executionTarget: { kind: "remote", transport: "ssh" } as never,
+      });
+
+      const modelsCall = runProcessMock.mock.calls[0];
+      expect(modelsCall?.[4]?.env?.PATH).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("downgrades auth failures to warnings", async () => {
