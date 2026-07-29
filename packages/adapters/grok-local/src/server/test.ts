@@ -6,8 +6,6 @@ import type {
 import {
   asNumber,
   asString,
-  asStringArray,
-  ensurePathInEnv,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -18,6 +16,10 @@ import {
   runAdapterExecutionTargetProcess,
 } from "@paperclipai/adapter-utils/execution-target";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
+import {
+  applyLocalBinPathForExecution,
+  resolveGrokHeadlessPermissionMode,
+} from "./execute.js";
 import { parseGrokJsonl } from "./parse.js";
 
 export interface GrokModelsProbe {
@@ -142,8 +144,16 @@ export async function testEnvironment(
     });
   }
 
-  const env = normalizeEnv(config.env);
-  const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
+  const configEnv = normalizeEnv(config.env);
+  // Match execute(): local targets prepend `$HOME/.local/bin` so redeploy-safe
+  // resolution works for env tests too; remote targets keep the remote PATH.
+  const { runtimeEnv, spawnEnv } = applyLocalBinPathForExecution({
+    configEnv,
+    isRemote: targetIsRemote,
+  });
+  const { mode: permissionMode } = resolveGrokHeadlessPermissionMode(
+    asString(config.permissionMode, ""),
+  );
 
   try {
     await ensureAdapterExecutionTargetCommandResolvable(command, target, cwd, runtimeEnv);
@@ -174,7 +184,7 @@ export async function testEnvironment(
       ["models"],
       {
         cwd,
-        env,
+        env: spawnEnv,
         timeoutSec: Math.max(1, asNumber(config.helloProbeTimeoutSec, 45)),
         graceSec: 5,
         onLog: async () => {},
@@ -246,7 +256,7 @@ export async function testEnvironment(
       "streaming-json",
       "--always-approve",
       "--permission-mode",
-      "dontAsk",
+      permissionMode,
       "--disable-web-search",
     ];
     if (configuredModel && configuredModel !== DEFAULT_GROK_LOCAL_MODEL) {
@@ -261,7 +271,7 @@ export async function testEnvironment(
       probeArgs,
       {
         cwd,
-        env,
+        env: spawnEnv,
         timeoutSec: Math.max(1, asNumber(config.helloProbeTimeoutSec, 45)),
         graceSec: 5,
         onLog: async () => {},

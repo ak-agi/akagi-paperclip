@@ -26,10 +26,10 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file. Paperclip stages it into the execution workspace as \`Agents.md\` when safe, otherwise falls back to \`--rules @file\`
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Grok model id. Defaults to grok-build.
-- permissionMode (string, optional): Grok permission mode. Defaults to \`dontAsk\`
+- permissionMode (string, optional): Grok permission mode. Defaults to \`bypassPermissions\`. Runs are headless (\`grok --single\`) with no interactive approver, so the interactive-approval mode \`dontAsk\` is automatically remapped to \`bypassPermissions\` — otherwise Grok cancels tool execution after one turn and the agent does no work.
 - reasoningEffort (string, optional): Grok reasoning effort passed via \`--reasoning-effort\`
 - maxTurns (number, optional): maximum agent turns for the run
-- command (string, optional): defaults to "grok"
+- command (string, optional): defaults to "grok". \`$HOME/.local/bin\` is prepended to the run's PATH so a \`grok\` installed there (Grok's default installer target, and the Paperclip Docker volume location) resolves without extra configuration or a system-wide symlink
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables
 

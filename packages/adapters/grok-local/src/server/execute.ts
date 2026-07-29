@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -56,6 +57,109 @@ function firstNonEmptyLine(text: string): string {
 function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean {
   const raw = env[key];
   return typeof raw === "string" && raw.trim().length > 0;
+}
+
+// Grok runs headlessly in this adapter (`grok --single`, no interactive approver).
+// Grok's `dontAsk` permission mode makes it cancel a turn the instant a tool would
+// need approval: it streams reasoning, then emits
+// `{"type":"end","stopReason":"Cancelled","num_turns":1}` and executes no tools — so
+// the agent appears to "run for a few seconds and quit" without doing any work, while
+// Paperclip still records the run as succeeded. `--always-approve` does NOT rescue it.
+// `bypassPermissions` is the headless-safe way to say "run autonomously without
+// prompting", so we default to it and remap `dontAsk` onto it.
+export const DEFAULT_GROK_LOCAL_PERMISSION_MODE = "bypassPermissions";
+
+// Permission modes that require an interactive approver and therefore make Grok's
+// headless `--single` run cancel instead of executing tools.
+const GROK_HEADLESS_INCOMPATIBLE_PERMISSION_MODES = new Set(["dontAsk"]);
+
+export function resolveGrokHeadlessPermissionMode(rawMode: string): {
+  mode: string;
+  remappedFrom: string | null;
+} {
+  const trimmed = rawMode.trim();
+  if (!trimmed) return { mode: DEFAULT_GROK_LOCAL_PERMISSION_MODE, remappedFrom: null };
+  if (GROK_HEADLESS_INCOMPATIBLE_PERMISSION_MODES.has(trimmed)) {
+    return { mode: DEFAULT_GROK_LOCAL_PERMISSION_MODE, remappedFrom: trimmed };
+  }
+  return { mode: trimmed, remappedFrom: null };
+}
+
+// The Grok binary is typically installed at `$HOME/.local/bin/grok` (Grok's own
+// installer target, and where Paperclip's Docker volume keeps it). The server's
+// inherited PATH does not include that directory, and `ensurePathInEnv` only fills an
+// empty PATH — so bare `grok` resolves only via a `/usr/local/bin/grok` symlink that
+// lives in the image layer and disappears when the container is recreated. Prepend
+// `$HOME/.local/bin` so the persistent-volume binary keeps resolving across a redeploy
+// (and so host installs work without extra PATH configuration).
+// Windows exposes the search path as `Path`; POSIX uses `PATH`. Return whichever the
+// env actually carries so reads and writes target the same key (defaulting to `PATH`).
+export function resolvePathEnvKey(env: NodeJS.ProcessEnv): "PATH" | "Path" {
+  if (typeof env.PATH === "string") return "PATH";
+  if (typeof env.Path === "string") return "Path";
+  return "PATH";
+}
+
+/** Resolve a usable home directory from env, with Windows + host fallbacks. */
+export function resolveHomeDir(env: NodeJS.ProcessEnv): string {
+  for (const key of ["HOME", "USERPROFILE"] as const) {
+    const value = typeof env[key] === "string" ? env[key]!.trim() : "";
+    if (value) return value;
+  }
+  try {
+    const home = os.homedir().trim();
+    if (home) return home;
+  } catch {
+    // os.homedir() can throw when the OS has no home concept for this process.
+  }
+  return "";
+}
+
+export function prependLocalBinToPath(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const home = resolveHomeDir(env);
+  if (!home) return env;
+  const localBin = path.join(home, ".local", "bin");
+  const pathKey = resolvePathEnvKey(env);
+  const currentPath = typeof env[pathKey] === "string" ? (env[pathKey] as string) : "";
+  const entries = currentPath.split(path.delimiter).filter(Boolean);
+  if (entries.includes(localBin)) return env;
+  return { ...env, [pathKey]: [localBin, ...entries].join(path.delimiter) };
+}
+
+/**
+ * Apply the local-only `$HOME/.local/bin` PATH prepend for resolvability + spawn.
+ * Remote targets keep the remote profile's PATH untouched.
+ * Returns `{ runtimeEnv, spawnEnv }` where `spawnEnv` carries any PATH override
+ * and `configEnv` (the original agent env) is left unmodified so invocation logs
+ * do not grow a full host PATH.
+ */
+export function applyLocalBinPathForExecution(input: {
+  configEnv: Record<string, string>;
+  processEnv?: NodeJS.ProcessEnv;
+  isRemote: boolean;
+}): {
+  runtimeEnv: NodeJS.ProcessEnv;
+  spawnEnv: Record<string, string>;
+} {
+  const { configEnv, isRemote } = input;
+  const processEnv = input.processEnv ?? process.env;
+  const effectiveEnv = Object.fromEntries(
+    Object.entries({ ...processEnv, ...configEnv }).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const runtimeEnv = isRemote
+    ? ensurePathInEnv(effectiveEnv)
+    : prependLocalBinToPath(ensurePathInEnv(effectiveEnv));
+  const spawnEnv: Record<string, string> = { ...configEnv };
+  if (!isRemote) {
+    const pathKey = resolvePathEnvKey(runtimeEnv);
+    const prependedPath = runtimeEnv[pathKey];
+    if (typeof prependedPath === "string") {
+      spawnEnv[pathKey] = prependedPath;
+    }
+  }
+  return { runtimeEnv, spawnEnv };
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -203,7 +307,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "grok");
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
-  const permissionMode = asString(config.permissionMode, "dontAsk").trim() || "dontAsk";
+  const { mode: permissionMode, remappedFrom: permissionModeRemappedFrom } =
+    resolveGrokHeadlessPermissionMode(asString(config.permissionMode, ""));
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
   const maxTurns = asNumber(config.maxTurns, 0);
   const alwaysApprove = asBoolean(config.alwaysApprove, true);
@@ -346,12 +451,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
 
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
-    const effectiveEnv = Object.fromEntries(
-      Object.entries({ ...process.env, ...env }).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-    const runtimeEnv = ensurePathInEnv(effectiveEnv);
+    // The `$HOME/.local/bin` prepend is a *local*-execution concern: it targets the
+    // grok binary on this Paperclip host. For remote (e.g. SSH) targets the binary lives
+    // under the remote user's home and the remote profile owns PATH, so injecting this
+    // host's PATH would clobber the remote one and break resolution. Only prepend locally.
+    // Spawn gets the PATH override via `spawnEnv`; `env` (config/Paperclip keys) stays
+    // free of a full host PATH so invocation logs keep their previous surface area.
+    const { runtimeEnv, spawnEnv } = applyLocalBinPathForExecution({
+      configEnv: env,
+      isRemote: executionTargetIsRemote,
+    });
     await ensureAdapterExecutionTargetCommandResolvable(command, executionTarget, cwd, runtimeEnv, {
       installCommand: ctx.runtimeCommandSpec?.installCommand ?? null,
       timeoutSec,
@@ -362,7 +471,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       includeRuntimeKeys: ["HOME"],
       resolvedCommand,
     });
-    const billingType = resolveBillingType(effectiveEnv);
+    const billingType = resolveBillingType(runtimeEnv);
 
     const runtimeSessionParams = parseObject(runtime.sessionParams);
     const runtimeSessionId = asString(runtimeSessionParams.sessionId, runtime.sessionId ?? "");
@@ -387,6 +496,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const commandNotes = (() => {
       const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
+      if (permissionModeRemappedFrom) {
+        notes.push(
+          `Remapped permission mode "${permissionModeRemappedFrom}" to "${permissionMode}": "${permissionModeRemappedFrom}" makes Grok cancel headless tool execution after one turn.`,
+        );
+      }
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
       if (stagedAssets.stagedInstructionsPath) {
         notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
@@ -472,7 +586,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       const proc = await runAdapterExecutionTargetProcess(runId, runtimeExecutionTarget, command, args, {
         cwd,
-        env,
+        env: spawnEnv,
         timeoutSec,
         graceSec,
         onSpawn,
