@@ -9,8 +9,12 @@ on:
         type: string
 
 jobs:
+  # Disabled on this fork: only invoked by release.yml canary/stable paths,
+  # which are also disabled (no npm trusted publishing here). Re-enable with
+  # release.yml if this fork starts publishing packages.
   typecheck:
     name: Typecheck
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -44,6 +48,7 @@ jobs:
 
   general_tests:
     name: General tests (${{ matrix.group_label }})
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -100,6 +105,7 @@ jobs:
 
   serialized_tests:
     name: Serialized tests (${{ matrix.shard_label }})
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -146,6 +152,7 @@ jobs:
 
   build:
     name: Build
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:

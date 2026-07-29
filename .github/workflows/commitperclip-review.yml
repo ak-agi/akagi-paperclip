@@ -14,7 +14,13 @@ permissions:
   contents: read
 
 jobs:
+  # Disabled on this fork: requires COMMITPERCLIP_KEY and upstream
+  # dependency-review / quality-gate bot setup that is not configured here.
+  # Every PR run fails at Dependency Review and adds noise. Keep PR CI in
+  # pr.yml. Flip `if:` to true (or remove it) after secrets and bot access
+  # are provisioned for this repository.
   review:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
