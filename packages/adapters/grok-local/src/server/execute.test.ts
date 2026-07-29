@@ -404,7 +404,7 @@ describe("prependLocalBinToPath", () => {
 
 describe("applyLocalBinPathForExecution", () => {
   it("puts PATH only on spawnEnv for local targets, not on configEnv", () => {
-    const configEnv = { PAPERCLIP_RUN_ID: "run-1" };
+    const configEnv: Record<string, string> = { PAPERCLIP_RUN_ID: "run-1" };
     const { spawnEnv, runtimeEnv } = applyLocalBinPathForExecution({
       configEnv,
       processEnv: { HOME: "/custom/home", PATH: "/usr/bin" },
