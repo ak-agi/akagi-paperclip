@@ -36,7 +36,13 @@ on:
         type: string
 
 jobs:
+  # Disabled on this fork: release-smoke installs a published npm dist-tag
+  # (canary/latest) via docker-onboard-smoke. We do not publish npm packages
+  # from this repo; PR e2e covers product smoke instead. Flip `if:` to true
+  # (or remove it) if npm publishing is restored and smoke against dist-tags
+  # is needed again.
   smoke:
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 45
 

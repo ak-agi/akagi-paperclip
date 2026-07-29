@@ -24,7 +24,14 @@ env:
   VERSION: ${{ github.event.inputs.version || format('git-{0}', github.sha) }}
 
 jobs:
+  # Disabled on this fork: REGISTRY is hardcoded to ghcr.io/paperclipai and
+  # these harness images are for managed K8s sandbox providers, not the
+  # self-hosted production image (docker.yml → ghcr.io/${{ github.repository }}).
+  # Runs here always fail and are unused by docker/install. Flip `if:` to true
+  # (or remove it) and retarget REGISTRY if this fork publishes agent-runtime
+  # images under its own GHCR namespace.
   build-and-sign:
+    if: false
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v7
