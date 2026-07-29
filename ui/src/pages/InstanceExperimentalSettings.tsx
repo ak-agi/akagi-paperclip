@@ -380,6 +380,8 @@ export function InstanceExperimentalSettings() {
   const summariesRequiredByManagedStatusCards = statusCardsManaged && enableStatusCards;
   const enableDecisions = experimentalQuery.data?.enableDecisions === true;
   const enableGoalsSidebarLink = experimentalQuery.data?.enableGoalsSidebarLink === true;
+  const enableProviderAuthCostInsights =
+    experimentalQuery.data?.enableProviderAuthCostInsights === true;
   const enableCases = experimentalQuery.data?.enableCases === true;
   const enableServerInfoDebugView = experimentalQuery.data?.enableServerInfoDebugView === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
@@ -642,6 +644,16 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableGoalsSidebarLink}
         ariaLabel="Toggle goals sidebar link experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Provider Auth Cost Insights"
+        description="Show subscription and local-auth provider usage as first-class cost signals on the dashboard and Costs page. Billed spend remains available, but token and quota usage become the lead metrics for auth-based providers."
+        checked={enableProviderAuthCostInsights}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableProviderAuthCostInsights: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableProviderAuthCostInsights}
+        ariaLabel="Toggle provider auth cost insights setting"
       />
 
       <ExperimentalToggleCard

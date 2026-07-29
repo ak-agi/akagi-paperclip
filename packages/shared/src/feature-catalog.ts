@@ -189,6 +189,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableProviderAuthCostInsights: {
+    title: "Provider Auth Cost Insights",
+    description:
+      "Show provider-auth and subscription usage as first-class cost insight signals on dashboard and cost surfaces.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableServerInfoDebugView: {
     title: "Server Info Debug View",
     description:

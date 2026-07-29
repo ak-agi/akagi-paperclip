@@ -12,6 +12,7 @@ import type {
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -191,6 +192,13 @@ export function Costs() {
   const weekRange = useMemo(() => currentWeekRange(), [today]);
   const companyId = selectedCompanyId ?? NO_COMPANY;
 
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const providerAuthCostInsightsEnabled =
+    experimentalSettings?.enableProviderAuthCostInsights === true;
+
   const { data: budgetData, isLoading: budgetLoading, error: budgetError } = useQuery({
     queryKey: queryKeys.budgets.overview(companyId),
     queryFn: () => budgetsApi.overview(companyId),
@@ -289,10 +297,10 @@ export function Costs() {
     return map;
   }, [spendData?.byAgentModel]);
 
-  const { data: providerData } = useQuery({
+  const { data: providerData, isLoading: providerLoading } = useQuery({
     queryKey: queryKeys.usageByProvider(companyId, from || undefined, to || undefined),
     queryFn: () => costsApi.byProvider(companyId, from || undefined, to || undefined),
-    enabled: !!selectedCompanyId && customReady && (mainTab === "providers" || mainTab === "billers"),
+    enabled: !!selectedCompanyId && customReady && (providerAuthCostInsightsEnabled || mainTab === "providers" || mainTab === "billers"),
     refetchInterval: 30_000,
     staleTime: 10_000,
   });
@@ -519,6 +527,26 @@ export function Costs() {
       0,
     );
 
+  const subscriptionUsage = useMemo(() => {
+    let runs = 0;
+    let tokens = 0;
+    let providers = 0;
+    for (const row of providerData ?? []) {
+      const rowTokens =
+        row.subscriptionInputTokens +
+        row.subscriptionCachedInputTokens +
+        row.subscriptionOutputTokens;
+      if (row.subscriptionRunCount > 0 || rowTokens > 0) {
+        runs += row.subscriptionRunCount;
+        tokens += rowTokens;
+        providers += 1;
+      }
+    }
+    return { runs, tokens, providers };
+  }, [providerData]);
+
+  const meteredTokenTotal = Math.max(0, inferenceTokenTotal - subscriptionUsage.tokens);
+
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
   const budgetPolicies = budgetData?.policies ?? [];
   const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
@@ -533,7 +561,7 @@ export function Costs() {
   }
 
   const showCustomPrompt = preset === "custom" && !customReady;
-  const showOverviewLoading = (spendLoading || financeLoading) && customReady;
+  const showOverviewLoading = (spendLoading || financeLoading || (providerAuthCostInsightsEnabled && providerLoading)) && customReady;
   const overviewError = spendError ?? financeError;
 
   return (
@@ -543,7 +571,9 @@ export function Costs() {
             <div>
                 <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-                  Inference spend, platform fees, credits, and live quota windows.
+                  {providerAuthCostInsightsEnabled
+                    ? "Provider-auth usage, billed spend, platform fees, credits, and live quota windows."
+                    : "Inference spend, platform fees, credits, and live quota windows."}
                 </p>
             </div>
 
@@ -582,9 +612,13 @@ export function Costs() {
 
           <div className="grid gap-3 lg:grid-cols-4">
             <MetricTile
-              label="Inference spend"
-              value={formatCents(spendData?.summary.spendCents ?? 0)}
-              subtitle={`${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
+              label={providerAuthCostInsightsEnabled ? "Provider-auth usage" : "Inference spend"}
+              value={providerAuthCostInsightsEnabled
+                ? formatTokens(subscriptionUsage.tokens)
+                : formatCents(spendData?.summary.spendCents ?? 0)}
+              subtitle={providerAuthCostInsightsEnabled
+                ? String(subscriptionUsage.runs) + " subscription run" + (subscriptionUsage.runs === 1 ? "" : "s") + " · " + formatCents(spendData?.summary.spendCents ?? 0) + " billed"
+                : `${formatTokens(inferenceTokenTotal)} tokens across request-scoped events`}
               icon={DollarSign}
             />
             <MetricTile
@@ -658,27 +692,39 @@ export function Costs() {
               <div className="grid gap-4 xl:grid-cols-(--gtc-31)">
                 <Card>
                   <CardHeader className="px-5 pt-5 pb-2">
-                    <CardTitle className="text-base">Inference ledger</CardTitle>
+                    <CardTitle className="text-base">
+                      {providerAuthCostInsightsEnabled ? "Provider-auth usage" : "Inference ledger"}
+                    </CardTitle>
                     <CardDescription>
-                      Request-scoped inference spend for the selected period.
+                      {providerAuthCostInsightsEnabled
+                        ? "Subscription and local-auth usage for the selected period, with billed spend kept as context."
+                        : "Request-scoped inference spend for the selected period."}
                     </CardDescription>
                   </CardHeader>
                   <CardContent className="space-y-4 px-5 pb-5 pt-2">
                     <div className="flex flex-wrap items-end justify-between gap-3">
                       <div>
                         <div className="text-3xl font-semibold tabular-nums">
-                          {formatCents(spendData?.summary.spendCents ?? 0)}
+                          {providerAuthCostInsightsEnabled
+                            ? formatTokens(subscriptionUsage.tokens)
+                            : formatCents(spendData?.summary.spendCents ?? 0)}
                         </div>
                         <div className="mt-1 text-sm text-muted-foreground">
-                          {spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
-                            ? `Budget ${formatCents(spendData.summary.budgetCents)}`
-                            : "Unlimited budget"}
+                          {providerAuthCostInsightsEnabled
+                            ? String(subscriptionUsage.runs) + " provider-auth run" + (subscriptionUsage.runs === 1 ? "" : "s") + " · " + formatCents(spendData?.summary.spendCents ?? 0) + " billed"
+                            : spendData?.summary.budgetCents && spendData.summary.budgetCents > 0
+                              ? `Budget ${formatCents(spendData.summary.budgetCents)}`
+                              : "Unlimited budget"}
                         </div>
                       </div>
                       <div className="border border-border px-4 py-3 text-right">
-                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">usage</div>
+                        <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+                          {providerAuthCostInsightsEnabled ? "metered" : "usage"}
+                        </div>
                         <div className="mt-1 text-lg font-medium tabular-nums">
-                          {formatTokens(inferenceTokenTotal)}
+                          {providerAuthCostInsightsEnabled
+                            ? formatTokens(meteredTokenTotal)
+                            : formatTokens(inferenceTokenTotal)}
                         </div>
                       </div>
                     </div>
