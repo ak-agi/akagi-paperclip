@@ -3,6 +3,8 @@ import { Link } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
 import { activityApi } from "../api/activity";
+import { costsApi } from "../api/costs";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
@@ -20,7 +22,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
-import { cn, formatCents } from "../lib/utils";
+import { cn, formatCents, formatTokens } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -31,6 +33,13 @@ import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+
+function currentUtcMonthRange(): { from: string; to: string } {
+  const now = new Date();
+  const from = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1, 0, 0, 0, 0));
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1, 0, 0, 0, 0));
+  return { from: from.toISOString(), to: to.toISOString() };
+}
 
 function getRecentIssues(issues: Issue[]): Issue[] {
   return [...issues]
@@ -55,6 +64,31 @@ export function Dashboard() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
   }, [setBreadcrumbs]);
+
+  const monthRange = useMemo(() => currentUtcMonthRange(), []);
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const providerAuthCostInsightsEnabled =
+    experimentalSettings?.enableProviderAuthCostInsights === true;
+
+  const { data: dashboardProviderUsage } = useQuery({
+    queryKey: queryKeys.usageByProvider(selectedCompanyId ?? "__none__", monthRange.from, monthRange.to),
+    queryFn: () => costsApi.byProvider(selectedCompanyId!, monthRange.from, monthRange.to),
+    enabled: !!selectedCompanyId && providerAuthCostInsightsEnabled,
+    staleTime: 10_000,
+  });
+
+  const dashboardProviderAuthUsage = useMemo(() => {
+    let runs = 0;
+    let tokens = 0;
+    for (const row of dashboardProviderUsage ?? []) {
+      runs += row.subscriptionRunCount;
+      tokens += row.subscriptionInputTokens + row.subscriptionCachedInputTokens + row.subscriptionOutputTokens;
+    }
+    return { runs, tokens };
+  }, [dashboardProviderUsage]);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({
@@ -284,14 +318,18 @@ export function Dashboard() {
             />
             <MetricCard
               icon={DollarSign}
-              value={formatCents(data.costs.monthSpendCents)}
-              label="Month Spend"
+              value={providerAuthCostInsightsEnabled
+                ? formatTokens(dashboardProviderAuthUsage.tokens)
+                : formatCents(data.costs.monthSpendCents)}
+              label={providerAuthCostInsightsEnabled ? "Provider Auth Usage" : "Month Spend"}
               to="/costs"
               description={
                 <span>
-                  {data.costs.monthBudgetCents > 0
-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
-                    : "Unlimited budget"}
+                  {providerAuthCostInsightsEnabled
+                    ? String(dashboardProviderAuthUsage.runs) + " subscription run" + (dashboardProviderAuthUsage.runs === 1 ? "" : "s") + " · " + formatCents(data.costs.monthSpendCents) + " billed"
+                    : data.costs.monthBudgetCents > 0
+                      ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+                      : "Unlimited budget"}
                 </span>
               }
             />

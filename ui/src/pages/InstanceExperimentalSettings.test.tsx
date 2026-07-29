@@ -85,6 +85,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStatusCards: false,
     enableDecisions: false,
     enableGoalsSidebarLink: false,
+    enableProviderAuthCostInsights: false,
     enableTaskWatchdogs: false,
     enableCloudSync: false,
     enableServerInfoDebugView: false,
