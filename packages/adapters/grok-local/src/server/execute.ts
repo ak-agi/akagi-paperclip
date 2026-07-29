@@ -138,7 +138,9 @@ export function applyLocalBinPathForExecution(input: {
   processEnv?: NodeJS.ProcessEnv;
   isRemote: boolean;
 }): {
-  runtimeEnv: NodeJS.ProcessEnv;
+  // String-only: undefined ProcessEnv values are stripped before PATH rewrites.
+  // Call sites (billing, logs, resolvability) expect Record<string, string>.
+  runtimeEnv: Record<string, string>;
   spawnEnv: Record<string, string>;
 } {
   const { configEnv, isRemote } = input;
@@ -148,9 +150,16 @@ export function applyLocalBinPathForExecution(input: {
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  const runtimeEnv = isRemote
+  // ensurePathInEnv / prependLocalBinToPath are typed as ProcessEnv, but with a
+  // string-only input they only rewrite PATH with strings — reassert that.
+  const withPath = isRemote
     ? ensurePathInEnv(effectiveEnv)
     : prependLocalBinToPath(ensurePathInEnv(effectiveEnv));
+  const runtimeEnv: Record<string, string> = Object.fromEntries(
+    Object.entries(withPath).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
   const spawnEnv: Record<string, string> = { ...configEnv };
   if (!isRemote) {
     const pathKey = resolvePathEnvKey(runtimeEnv);
