@@ -10,16 +10,24 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
-test("release workflow delegates stable and canary verification to the reusable workflow", () => {
+test("release workflow keeps canary and stable verification wiring to the reusable workflow (disabled on this fork)", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
+  // Fork context (#4, commit a59ef884): release automation is intentionally
+  // disabled here — this fork stages upstream fixes and ships GHCR images, it
+  // does not npm-publish. Every release job is gated `if: false` (see the
+  // comment block atop release.yml and doc/RELEASE-AUTOMATION-SETUP.md). This
+  // test asserts the disabled-but-preserved wiring: the jobs stay off
+  // (`if: false`) while the delegation to release-verify.yml and its `ref`
+  // inputs remain intact, so re-enabling is a one-line `if:` flip. If this fork
+  // starts publishing, flip the `if:` here and in release.yml together.
   assert.match(
     releaseWorkflow,
-    /verify_canary:\n\s+if: github\.event_name == 'push'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/,
+    /verify_canary:\n\s+if: false\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ github\.sha \}\}/,
   );
   assert.match(
     releaseWorkflow,
-    /verify_stable:\n\s+if: github\.event_name == 'workflow_dispatch'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ inputs\.source_ref \}\}/,
+    /verify_stable:\n\s+if: false\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml\n\s+with:\n\s+ref: \$\{\{ inputs\.source_ref \}\}/,
   );
   assert.doesNotMatch(releaseWorkflow, /verify_(?:canary|stable):[\s\S]*?pnpm test:run(?:\n|$)/);
 });
