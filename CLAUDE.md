@@ -110,11 +110,11 @@ This fork's Hermes adapter is **external-only** (branch `feat/externalize-hermes
 
 ### Fork QoL Patches (not in upstream)
 
-These UI modifications must be re-applied if re-copying source from upstream:
+These UI modifications are **already applied** in this fork's source. Do **not** re-add them — they are documented here so you recognize them and can re-apply them only if source is ever re-copied wholesale from upstream:
 
-1. **stderr_group** — amber accordion for MCP init noise in `RunTranscriptView.tsx`
-2. **tool_group** — accordion for consecutive non-terminal tools (write, read, search, browser)
-3. **Dashboard excerpt** — `LatestRunCard` strips markdown, shows first 3 lines/280 chars
+1. **stderr_group** — amber accordion batching consecutive stderr lines (e.g. MCP init noise). Batched inline in `normalizeTranscript` and rendered by `TranscriptStderrGroup` in `ui/src/components/transcript/RunTranscriptView.tsx`.
+2. **tool_group** — accordion grouping consecutive non-command tools (write, read, search, browser). See `groupToolBlocks` in the same `RunTranscriptView.tsx`.
+3. **Agent Detail latest-run excerpt** — `LatestRunCard` in `ui/src/pages/AgentDetail.tsx` strips markdown and shows the first 3 lines / 280 chars of the run summary. It renders on the **Agent Detail page**, not the Dashboard.
 
 ## Pull Request Requirements
 
