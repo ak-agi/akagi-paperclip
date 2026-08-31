@@ -59,9 +59,28 @@ RUN pnpm install --frozen-lockfile
 
 FROM base AS build
 WORKDIR /app
+# packages/paperclip-runner builds a Rust binary and pins its toolchain in
+# packages/paperclip-runner/rust-toolchain.toml. Debian trixie ships rustc
+# 1.85, but the runner's crate graph needs >= 1.88 (icu_normalizer 2.3.0 wants
+# 1.88, idna_adapter 1.2.2 wants 1.86), so the apt toolchain cannot build it.
+# Install rustup instead and let it honour the pin.
+#
+# RUST_TOOLCHAIN_VERSION mirrors the channel in that file so the expensive
+# toolchain download happens here, in a layer that is cached across app code
+# changes. It is only a cache hint: if the pin later moves ahead of this ARG,
+# rustup still fetches the pinned toolchain when cargo runs. The build stays
+# correct, it is just slower until the ARG is updated to match.
+ARG RUST_TOOLCHAIN_VERSION=1.97.1
+ENV RUSTUP_HOME=/usr/local/rustup \
+  CARGO_HOME=/usr/local/cargo \
+  PATH=/usr/local/cargo/bin:$PATH
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends cargo rustc \
-  && rm -rf /var/lib/apt/lists/*
+  && apt-get install -y --no-install-recommends build-essential \
+  && rm -rf /var/lib/apt/lists/* \
+  && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+    | sh -s -- -y --no-modify-path --profile minimal \
+      --default-toolchain "${RUST_TOOLCHAIN_VERSION}" --component rustfmt \
+  && rustc --version
 COPY --from=deps /app /app
 COPY . .
 RUN pnpm --filter @paperclipai/ui build
