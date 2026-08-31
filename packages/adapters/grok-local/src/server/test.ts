@@ -21,6 +21,7 @@ import {
   resolveGrokHeadlessPermissionMode,
 } from "./execute.js";
 import { parseGrokJsonl } from "./parse.js";
+import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 
 export interface GrokModelsProbe {
   authenticated: boolean;
@@ -110,6 +111,7 @@ export async function testEnvironment(
   const command = asString(config.command, "grok");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
     ? ctx.environmentName ?? describeAdapterExecutionTarget(target)
@@ -212,6 +214,18 @@ export async function testEnvironment(
         detail: summarizeProbeDetail(modelsProbe.stdout, modelsProbe.stderr, null),
         hint: authRequired ? "Run `grok login` on the target host, then retry." : undefined,
       });
+      if (authRequired && targetIsSandbox) {
+        // Emit the neutral canonical check so the user interface can decide
+        // login eligibility from a stable code. The user interface does not
+        // read the message text or the top-level status.
+        checks.push({
+          code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+          level: "warn",
+          message: "This environment has no ready authentication for this adapter.",
+          detail: summarizeProbeDetail(modelsProbe.stdout, modelsProbe.stderr, null),
+          hint: "Provide credentials for this adapter, or start login in the environment.",
+        });
+      }
     } else {
       checks.push({
         code: "grok_models_probe_passed",
@@ -236,15 +250,22 @@ export async function testEnvironment(
         });
       }
       if (configuredModel) {
+        // The default model id is a sentinel meaning "let the Grok CLI pick its
+        // own default" — execute.ts only passes `--model` when the value differs
+        // from it, so the sentinel is never sent to grok and must not be checked
+        // against the discovered list (real grok never lists "grok-build", which
+        // otherwise produced a spurious "not found" warning on every probe).
+        const usesCliDefault = configuredModel === DEFAULT_GROK_LOCAL_MODEL;
+        const available = usesCliDefault || parsedModels.models.includes(configuredModel);
         checks.push({
-          code: parsedModels.models.includes(configuredModel) ? "grok_model_configured" : "grok_model_not_found",
-          level: parsedModels.models.includes(configuredModel) ? "info" : "warn",
-          message: parsedModels.models.includes(configuredModel)
-            ? `Configured model: ${configuredModel}`
-            : `Configured model "${configuredModel}" not found in available models.`,
-          hint: parsedModels.models.includes(configuredModel)
-            ? undefined
-            : "Run `grok models` and choose an available model id.",
+          code: available ? "grok_model_configured" : "grok_model_not_found",
+          level: available ? "info" : "warn",
+          message: usesCliDefault
+            ? `Using the Grok CLI's default model${parsedModels.defaultModel ? ` (${parsedModels.defaultModel})` : ""}.`
+            : available
+              ? `Configured model: ${configuredModel}`
+              : `Configured model "${configuredModel}" not found in available models.`,
+          hint: available ? undefined : "Run `grok models` and choose an available model id.",
         });
       }
     }
@@ -255,10 +276,11 @@ export async function testEnvironment(
       "--output-format",
       "streaming-json",
       "--always-approve",
-      "--permission-mode",
-      permissionMode,
       "--disable-web-search",
     ];
+    // Only when the agent config asks for one, and only if it survived the
+    // headless guard: no mode is the unattended default (see execute.ts).
+    if (permissionMode) probeArgs.push("--permission-mode", permissionMode);
     if (configuredModel && configuredModel !== DEFAULT_GROK_LOCAL_MODEL) {
       probeArgs.push("--model", configuredModel);
     }
@@ -298,6 +320,18 @@ export async function testEnvironment(
         ...(detail ? { detail } : {}),
         hint: authRequired ? "Run `grok login` on the target host, then retry." : undefined,
       });
+      if (authRequired && targetIsSandbox) {
+        // Emit the neutral canonical check so the user interface can decide
+        // login eligibility from a stable code. The user interface does not
+        // read the message text or the top-level status.
+        checks.push({
+          code: ADAPTER_AUTH_MISSING_CHECK_CODE,
+          level: "warn",
+          message: "This environment has no ready authentication for this adapter.",
+          ...(detail ? { detail } : {}),
+          hint: "Provide credentials for this adapter, or start login in the environment.",
+        });
+      }
     } else if (/\bhello\b/i.test(parsed.summary)) {
       checks.push({
         code: "grok_hello_probe_passed",

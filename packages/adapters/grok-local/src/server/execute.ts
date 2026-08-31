@@ -25,6 +25,7 @@ import {
   asStringArray,
   buildInvocationEnvForLogs,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
   joinPromptSections,
@@ -35,12 +36,13 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
   stringifyPaperclipWakePayload,
   refreshPaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
+import { resolveManagedGrokHomeDir } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -60,29 +62,23 @@ function hasNonEmptyEnvValue(env: Record<string, string>, key: string): boolean 
 }
 
 // Grok runs headlessly in this adapter (`grok --single`, no interactive approver).
-// Grok's `dontAsk` permission mode makes it cancel a turn the instant a tool would
-// need approval: it streams reasoning, then emits
-// `{"type":"end","stopReason":"Cancelled","num_turns":1}` and executes no tools — so
-// the agent appears to "run for a few seconds and quit" without doing any work, while
-// Paperclip still records the run as succeeded. `--always-approve` does NOT rescue it.
-// `bypassPermissions` is the headless-safe way to say "run autonomously without
-// prompting", so we default to it and remap `dontAsk` onto it.
-export const DEFAULT_GROK_LOCAL_PERMISSION_MODE = "bypassPermissions";
-
-// Permission modes that require an interactive approver and therefore make Grok's
-// headless `--single` run cancel instead of executing tools.
+// Grok >= 1.0 enforces `dontAsk` as deny-by-default and it overrides
+// `--always-approve`, so a run configured with it cancels at the first tool call
+// ("User cancelled the execution for tool ...") while Paperclip still records the run
+// as succeeded. `--always-approve` alone is the unattended policy: no permission mode
+// is passed by default, and an explicitly configured `dontAsk` is dropped rather than
+// forwarded so a stale agent config cannot silently produce do-nothing runs.
 const GROK_HEADLESS_INCOMPATIBLE_PERMISSION_MODES = new Set(["dontAsk"]);
 
 export function resolveGrokHeadlessPermissionMode(rawMode: string): {
   mode: string;
-  remappedFrom: string | null;
+  droppedMode: string | null;
 } {
   const trimmed = rawMode.trim();
-  if (!trimmed) return { mode: DEFAULT_GROK_LOCAL_PERMISSION_MODE, remappedFrom: null };
   if (GROK_HEADLESS_INCOMPATIBLE_PERMISSION_MODES.has(trimmed)) {
-    return { mode: DEFAULT_GROK_LOCAL_PERMISSION_MODE, remappedFrom: trimmed };
+    return { mode: "", droppedMode: trimmed };
   }
-  return { mode: trimmed, remappedFrom: null };
+  return { mode: trimmed, droppedMode: null };
 }
 
 // The Grok binary is typically installed at `$HOME/.local/bin/grok` (Grok's own
@@ -316,7 +312,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   const command = asString(config.command, "grok");
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
-  const { mode: permissionMode, remappedFrom: permissionModeRemappedFrom } =
+  const { mode: permissionMode, droppedMode: droppedPermissionMode } =
     resolveGrokHeadlessPermissionMode(asString(config.permissionMode, ""));
   const reasoningEffort = asString(config.reasoningEffort, "").trim();
   const maxTurns = asNumber(config.maxTurns, 0);
@@ -343,7 +339,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const grokSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredGrokSkillNames = resolvePaperclipDesiredSkillNames(config, grokSkillEntries);
+  const desiredGrokSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, grokSkillEntries);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const stagedAssets = await stageGrokProjectAssets({
     cwd,
@@ -356,7 +352,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const envConfig = parseObject(config.env);
-    const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+    const env: Record<string, string> = {
+      ...buildPaperclipEnv(agent),
+      ...buildRuntimeToolsEnv(ctx.runtimeTools),
+    };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
       (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -406,6 +405,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     });
     if (authToken) {
       env.PAPERCLIP_API_KEY = authToken;
+    }
+    // Subscription mode (no XAI_API_KEY): point the run at the company-scoped
+    // Grok home a completed device login wrote. Leaves the API-key path below
+    // (`resolveBillingType`) unchanged when the key exists.
+    if (!hasNonEmptyEnvValue(env, "XAI_API_KEY") && !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY")) {
+      env.GROK_HOME = resolveManagedGrokHomeDir(process.env, agent.companyId);
     }
 
     const timeoutSec = resolveAdapterExecutionTargetTimeoutSec(
@@ -505,9 +510,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     const commandNotes = (() => {
       const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
-      if (permissionModeRemappedFrom) {
+      if (droppedPermissionMode) {
         notes.push(
-          `Remapped permission mode "${permissionModeRemappedFrom}" to "${permissionMode}": "${permissionModeRemappedFrom}" makes Grok cancel headless tool execution after one turn.`,
+          `Dropped permission mode "${droppedPermissionMode}": it makes Grok cancel headless tool execution after one turn.`,
         );
       }
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
@@ -664,10 +669,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorMessage: failed ? fallbackErrorMessage : null,
         usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
+          inputTokens: attempt.parsed.inputTokens,
+          outputTokens: attempt.parsed.outputTokens,
+          cachedInputTokens: attempt.parsed.cachedInputTokens,
         },
+        // Each `--single` invocation reports usage for just that process, not
+        // a running total for the resumed session, so the server must not
+        // delta it against the previous run's usage.
+        usageBasis: "per_run",
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,
@@ -675,7 +684,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         biller: billingType === "api" ? "xai" : "grok",
         model,
         billingType,
-        costUsd: null,
+        // Subscription billing (OAuth/SuperGrok) has no marginal dollar cost per run,
+        // so we only surface costUsd for metered API-key billing.
+        costUsd: billingType === "api" ? attempt.parsed.costUsd : null,
         resultJson: {
           stopReason: attempt.parsed.stopReason,
           requestId: attempt.parsed.requestId,

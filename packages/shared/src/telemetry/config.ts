@@ -85,5 +85,7 @@ export function resolveTelemetryConfig(
   if (fileConfig?.enabled === true || process.env.PAPERCLIP_TELEMETRY_ENABLED === "1") {
     return { enabled: true, endpoint, ...caps };
   }
-  return { enabled: false };
+  // Off by default on this fork (opt-in only), but the caps/backoff surface is
+  // still part of the contract every other disabled branch returns.
+  return { enabled: false, ...caps };
 }

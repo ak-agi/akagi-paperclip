@@ -38,6 +38,7 @@ import {
   resolveHomeDir,
   resolvePathEnvKey,
 } from "./execute.js";
+import { resolveManagedGrokHomeDir } from "./grok-home.js";
 
 const tempRoots: string[] = [];
 
@@ -80,10 +81,11 @@ describe("grok_local execute", () => {
           "--output-format",
           "streaming-json",
           "--always-approve",
-          "--permission-mode",
-          "bypassPermissions",
         ]),
       );
+      // Grok >= 1.0 enforces `dontAsk` as deny-by-default over --always-approve,
+      // so no permission mode may be passed unless explicitly configured.
+      expect(args).not.toContain("--permission-mode");
       expect(await fs.readFile(path.join(root, "Agents.md"), "utf8")).toContain("You are Grok.");
       expect(await pathExists(path.join(root, ".claude", "skills", "paperclip", "SKILL.md"))).toBe(true);
       await options.onLog?.("stdout", '{"type":"text","data":"done"}\n');
@@ -147,7 +149,155 @@ describe("grok_local execute", () => {
     expect(logs.map((entry) => entry.chunk)).not.toEqual([]);
   });
 
-  it("remaps the headless-incompatible dontAsk permission mode to bypassPermissions", async () => {
+  it("reports real per-run token usage, marks it as per_run, and only surfaces cost for API billing", async () => {
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "text", data: "done" }),
+        JSON.stringify({
+          type: "end",
+          stopReason: "EndTurn",
+          sessionId: "sess-1",
+          requestId: "req-1",
+          usage: { input_tokens: 2384, output_tokens: 261, cache_read_input_tokens: 23040 },
+          total_cost_usd: 0.013246,
+        }),
+      ].join("\n"),
+      stderr: "",
+    }));
+
+    const makeCtx = async (runId: string): Promise<AdapterExecutionContext> => ({
+      runId,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: await makeTempRoot() },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    const previousApiKey = process.env.XAI_API_KEY;
+    try {
+      // Subscription billing (no XAI_API_KEY): token usage is populated, but
+      // there is no marginal dollar cost so costUsd stays null. Clear the key
+      // explicitly so the ambient environment (dev machine or CI with provider
+      // secrets) cannot flip this branch to API billing.
+      delete process.env.XAI_API_KEY;
+      const subscriptionResult = await execute(await makeCtx("run-subscription"));
+      expect(subscriptionResult).toMatchObject({
+        usage: { inputTokens: 2384, outputTokens: 261, cachedInputTokens: 23040 },
+        usageBasis: "per_run",
+        billingType: "subscription",
+        costUsd: null,
+      });
+
+      // API-key billing: same token usage, plus the real dollar cost.
+      process.env.XAI_API_KEY = "test-key";
+      const apiResult = await execute(await makeCtx("run-api"));
+      expect(apiResult).toMatchObject({
+        usage: { inputTokens: 2384, outputTokens: 261, cachedInputTokens: 23040 },
+        usageBasis: "per_run",
+        billingType: "api",
+        costUsd: 0.013246,
+      });
+    } finally {
+      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("sets GROK_HOME to the company home in subscription mode, and leaves it unset when XAI_API_KEY exists", async () => {
+    let seenEnv: Record<string, string> = {};
+    runProcessMock.mockImplementation(async (_runId, _target, _command, _args, options) => {
+      seenEnv = options.env;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1", requestId: "req-1" }),
+        stderr: "",
+      };
+    });
+
+    const makeCtx = async (runId: string): Promise<AdapterExecutionContext> => ({
+      runId,
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: await makeTempRoot() },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    });
+
+    const previousApiKey = process.env.XAI_API_KEY;
+    try {
+      delete process.env.XAI_API_KEY;
+      await execute(await makeCtx("run-subscription-home"));
+      expect(seenEnv.GROK_HOME).toBe(resolveManagedGrokHomeDir(process.env, "company-1"));
+
+      // The XAI_API_KEY path stays unchanged: no GROK_HOME is set when the key
+      // exists, because the CLI authenticates via the environment variable
+      // directly, not from the company Grok home's auth.json.
+      process.env.XAI_API_KEY = "test-key";
+      await execute(await makeCtx("run-api-home"));
+      expect(seenEnv.GROK_HOME).toBeUndefined();
+    } finally {
+      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previousApiKey;
+    }
+  });
+
+  it("passes an explicitly configured permissionMode through to the CLI", async () => {
+    let seenArgs: string[] = [];
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
+      seenArgs = args;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "sess-1", requestId: "req-1" }),
+        stderr: "",
+      };
+    });
+
+    const ctx: AdapterExecutionContext = {
+      runId: "run-permission-mode",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: await makeTempRoot(), permissionMode: "bypassPermissions" },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    await execute(ctx);
+
+    const flagIndex = seenArgs.indexOf("--permission-mode");
+    expect(flagIndex).toBeGreaterThan(-1);
+    expect(seenArgs[flagIndex + 1]).toBe("bypassPermissions");
+  });
+
+  it("drops the headless-incompatible dontAsk permission mode", async () => {
     const root = await makeTempRoot();
 
     let capturedArgs: string[] = [];
@@ -183,10 +333,9 @@ describe("grok_local execute", () => {
 
     await execute(ctx);
 
-    const permissionModeIndex = capturedArgs.indexOf("--permission-mode");
-    expect(permissionModeIndex).toBeGreaterThanOrEqual(0);
-    expect(capturedArgs[permissionModeIndex + 1]).toBe("bypassPermissions");
+    expect(capturedArgs).not.toContain("--permission-mode");
     expect(capturedArgs).not.toContain("dontAsk");
+    expect(capturedArgs).toContain("--always-approve");
   });
 
   it("launches the Grok process with $HOME/.local/bin prepended to PATH", async () => {
@@ -333,25 +482,25 @@ describe("grok_local execute", () => {
 });
 
 describe("resolveGrokHeadlessPermissionMode", () => {
-  it("defaults to bypassPermissions when no mode is configured", () => {
-    expect(resolveGrokHeadlessPermissionMode("")).toEqual({ mode: "bypassPermissions", remappedFrom: null });
-    expect(resolveGrokHeadlessPermissionMode("   ")).toEqual({ mode: "bypassPermissions", remappedFrom: null });
+  it("passes no mode when none is configured", () => {
+    expect(resolveGrokHeadlessPermissionMode("")).toEqual({ mode: "", droppedMode: null });
+    expect(resolveGrokHeadlessPermissionMode("   ")).toEqual({ mode: "", droppedMode: null });
   });
 
-  it("remaps the headless-incompatible dontAsk mode to bypassPermissions and records the origin", () => {
+  it("drops the headless-incompatible dontAsk mode and records the origin", () => {
     expect(resolveGrokHeadlessPermissionMode("dontAsk")).toEqual({
-      mode: "bypassPermissions",
-      remappedFrom: "dontAsk",
+      mode: "",
+      droppedMode: "dontAsk",
     });
     expect(resolveGrokHeadlessPermissionMode("  dontAsk  ")).toEqual({
-      mode: "bypassPermissions",
-      remappedFrom: "dontAsk",
+      mode: "",
+      droppedMode: "dontAsk",
     });
   });
 
   it("passes through other modes unchanged", () => {
     for (const mode of ["bypassPermissions", "auto", "acceptEdits", "default", "plan"]) {
-      expect(resolveGrokHeadlessPermissionMode(mode)).toEqual({ mode, remappedFrom: null });
+      expect(resolveGrokHeadlessPermissionMode(mode)).toEqual({ mode, droppedMode: null });
     }
   });
 });
