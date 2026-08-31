@@ -1,5 +1,5 @@
 import type { AdapterModel } from "../../api/agents";
-import type { Issue, Project } from "@paperclipai/shared";
+import { MODEL_PROFILE_KEYS, type Issue, type Project } from "@paperclipai/shared";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
 import type { IssueModelLane } from "../../lib/issue-assignee-overrides";
 
@@ -113,7 +113,10 @@ export function thinkingEffortValueFor(adapterType: string | null | undefined, a
 }
 
 export function overrideLane(overrides: Issue["assigneeAdapterOverrides"]): IssueModelLane {
-  if (overrides?.modelProfile === "cheap") return "cheap";
+  const modelProfile = overrides?.modelProfile;
+  if (modelProfile && (MODEL_PROFILE_KEYS as readonly string[]).includes(modelProfile)) {
+    return modelProfile;
+  }
   if (overrides?.adapterConfig) return "custom";
   return "primary";
 }

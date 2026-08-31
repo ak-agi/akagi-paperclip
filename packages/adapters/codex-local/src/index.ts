@@ -74,12 +74,48 @@ export const models = [
   { id: "codex-mini-latest", label: "Codex Mini" },
 ];
 
+// `cheap` is the recovery lane: status-only coordination, never deliverable
+// work (doc/execution-semantics.md 9.3). It intentionally ships an empty
+// adapterConfig so it stays on the agent's primary model unless the agent
+// runtime config declares one. `senior` / `mid` / `junior` are work lanes and
+// may produce deliverable work; their model ids come from the `models` list
+// above and effort is expressed with Codex's `modelReasoningEffort` key.
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
     label: "Cheap",
     description: "Use an explicitly configured lower-cost Codex model without changing the primary model.",
     adapterConfig: {},
+    source: "adapter_default",
+  },
+  {
+    key: "senior",
+    label: "Senior",
+    description: "Top Codex model work lane for hard or ambiguous tasks.",
+    adapterConfig: {
+      model: DEFAULT_CODEX_LOCAL_MODEL,
+      modelReasoningEffort: "medium",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "mid",
+    label: "Mid",
+    description: "Mid-cost Codex work lane for ordinary well-specified tasks.",
+    adapterConfig: {
+      model: "gpt-5.4",
+      modelReasoningEffort: "medium",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "junior",
+    label: "Junior",
+    description: "Low-cost Codex work lane for narrow, fully specified tasks.",
+    adapterConfig: {
+      model: "gpt-5.4-mini",
+      modelReasoningEffort: "low",
+    },
     source: "adapter_default",
   },
 ];

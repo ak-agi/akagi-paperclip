@@ -577,6 +577,19 @@ Cheap model profiles are only for status-only operational recovery overhead. Pap
 
 Automatic retries that can continue source work must use the original/normal model lane. This includes failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, assigned-todo dispatch recovery, and any run that can update repo files, issue documents, plans, work products, or attachments. When a cheap status-only recovery determines that actual work remains, it must hand back to a normal-model worker run before source work or persistent deliverable updates resume. Cheap recovery hints must be scrubbed from copied retry, resume, child, and downstream source-work contexts.
 
+#### Recovery lane versus work lanes
+
+`MODEL_PROFILE_KEYS` holds two different kinds of lane. Do not conflate them.
+
+- `cheap` is the **recovery lane**. Everything in this section applies to it and to it alone. It is status-only, it carries the `allowDeliverableWork: false` / `allowDocumentUpdates: false` / `resumeRequiresNormalModel: true` guards, and it must never produce deliverable work.
+- `senior`, `mid`, and `junior` are **work lanes**. They are ordinary capability and cost tiers. They **do** permit deliverable work: repo file changes, issue documents, plans, work products, and attachments. They carry none of the recovery guards, and a run on a work lane is a normal-model run for the purpose of the rules above.
+
+The recovery lane is not reachable from a work lane and a work lane is not reachable from the recovery lane. A cheap status-only recovery that finds real work remaining still hands back to a normal worker run; that worker run may sit on any work lane, but it is never `cheap`.
+
+Selecting a work lane on an adapter that does not declare it is not an error. Lane resolution records `fallbackReason: "adapter_profile_not_supported"` and the run proceeds on the agent's primary model.
+
+**Forward note (tier escalation).** A later change binds agent tier to the work lanes and lets a tier-limited agent escalate upward when it cannot proceed. That escalation inherits the context-scrubbing rule stated above rather than defining a new one: the failed reasoning chain must be scrubbed from the escalated context, and the higher tier re-specifies from the original task. The rule is stated once here and applies to both recovery hand-back and tier escalation.
+
 ## 10. Startup and Periodic Reconciliation
 
 Startup recovery and periodic recovery are different from normal wakeup delivery.

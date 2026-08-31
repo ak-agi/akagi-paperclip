@@ -18,6 +18,10 @@ export const models = [
   { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
 ];
 
+// `cheap` is the recovery lane: status-only coordination, never deliverable
+// work (doc/execution-semantics.md 9.3). `senior` / `mid` / `junior` are work
+// lanes and may produce deliverable work. Model ids below are taken from the
+// `models` list above.
 export const modelProfiles: AdapterModelProfileDefinition[] = [
   {
     key: "cheap",
@@ -25,6 +29,36 @@ export const modelProfiles: AdapterModelProfileDefinition[] = [
     description: "Use Claude Sonnet as the lower-cost Claude Code lane while preserving the agent's primary model.",
     adapterConfig: {
       model: "claude-sonnet-4-6",
+      effort: "low",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "senior",
+    label: "Senior",
+    description: "Opus-class work lane for hard or ambiguous tasks.",
+    adapterConfig: {
+      model: "claude-opus-4-8",
+      effort: "medium",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "mid",
+    label: "Mid",
+    description: "Sonnet-class work lane for ordinary well-specified tasks.",
+    adapterConfig: {
+      model: "claude-sonnet-5",
+      effort: "medium",
+    },
+    source: "adapter_default",
+  },
+  {
+    key: "junior",
+    label: "Junior",
+    description: "Haiku-class work lane for narrow, fully specified tasks.",
+    adapterConfig: {
+      model: "claude-haiku-4-5",
       effort: "low",
     },
     source: "adapter_default",

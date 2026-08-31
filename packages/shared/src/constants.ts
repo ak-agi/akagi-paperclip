@@ -127,8 +127,31 @@ export const ADAPTER_AGNOSTIC_KEYS = [
 ] as const;
 export type AdapterAgnosticKey = (typeof ADAPTER_AGNOSTIC_KEYS)[number];
 
-export const MODEL_PROFILE_KEYS = ["cheap"] as const;
+// Model profile lanes. Two distinct kinds live in this one list:
+//
+// - `cheap` is the RECOVERY lane. It is reserved for status-only recovery
+//   coordination (see `doc/execution-semantics.md` §9.3 and
+//   `doc/SPEC-implementation.md` §11.5) and must never be used to produce
+//   deliverable work. Its meaning is unchanged by the work lanes below.
+// - `senior` / `mid` / `junior` are WORK lanes. They are ordinary
+//   capability/cost tiers and DO permit deliverable work. They carry none of
+//   the `cheap` recovery guards and are not reachable from the recovery path.
+//
+// Keep the two kinds separate: conflating them would let a recovery wake
+// perform source work, or let a work lane inherit the recovery guard context.
+export const MODEL_PROFILE_KEYS = ["cheap", "senior", "mid", "junior"] as const;
 export type ModelProfileKey = (typeof MODEL_PROFILE_KEYS)[number];
+
+/** The recovery-only lane. Status-only coordination; never deliverable work. */
+export const RECOVERY_MODEL_PROFILE_KEY = "cheap" as const satisfies ModelProfileKey;
+
+/** Lanes that may perform deliverable work. Excludes the recovery lane. */
+export const WORK_MODEL_PROFILE_KEYS = ["senior", "mid", "junior"] as const satisfies readonly ModelProfileKey[];
+export type WorkModelProfileKey = (typeof WORK_MODEL_PROFILE_KEYS)[number];
+
+export function isWorkModelProfileKey(value: unknown): value is WorkModelProfileKey {
+  return WORK_MODEL_PROFILE_KEYS.includes(value as WorkModelProfileKey);
+}
 
 export const AGENT_ICON_NAMES = [
   "bot",
