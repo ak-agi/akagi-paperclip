@@ -873,6 +873,14 @@ export type BillingType = (typeof BILLING_TYPES)[number];
 export const COST_STATUSES = ["reported", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
+/**
+ * Classes used by the orchestration-vs-execution cost read model. A heartbeat
+ * run is `execution` when it produced a work product or document revision,
+ * `orchestration` when it only created child issues, commented, or reassigned,
+ * and `unclassified` when it left neither trace.
+ */
+export const ORCHESTRATION_RUN_CLASSES = ["execution", "orchestration", "unclassified"] as const;
+
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",
   "platform_fee",

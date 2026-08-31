@@ -1083,8 +1083,25 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `GET /companies/:companyId/costs/summary`
 - `GET /companies/:companyId/costs/by-agent`
 - `GET /companies/:companyId/costs/by-project`
+- `GET /companies/:companyId/costs/routing`
 - `PATCH /companies/:companyId/budgets`
 - `PATCH /agents/:agentId/budgets`
+
+`costs/routing` is a read-only orchestration-overhead report. It classifies each
+cost-bearing heartbeat run as an **execution run** (it created an issue work
+product or a document revision) or an **orchestration run** (it only created
+child issues, commented, or reassigned), then aggregates per root issue tree
+(recursive walk of `issues.parent_id`) and per delegation depth
+(`issues.request_depth`). Two exclusions are mandatory in every cost comparison:
+
+- rows with `cost_status = 'unpriced'` are excluded from all cent sums, because
+  Paperclip has no model price table and those rows would bias every ratio to zero
+- rows with `billing_type = 'subscription_included'` are excluded from all cent
+  sums, because they report near-zero marginal cost; their tokens are still
+  counted, because quota rather than dollars is their scarce resource
+
+The governing invariant is that an issue tree whose orchestration cost exceeds
+its execution cost is a bug.
 
 ## 10.9 Activity and Dashboard
 

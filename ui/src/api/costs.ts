@@ -6,6 +6,7 @@ import type {
   CostByAgentModel,
   CostByProject,
   CostWindowSpendRow,
+  OrchestrationCostReport,
   FinanceSummary,
   FinanceByBiller,
   FinanceByKind,
@@ -45,6 +46,10 @@ export const costsApi = {
     api.get<FinanceEvent[]>(`/companies/${companyId}/costs/finance-events${dateParamsWithLimit(from, to, limit)}`),
   windowSpend: (companyId: string) =>
     api.get<CostWindowSpendRow[]>(`/companies/${companyId}/costs/window-spend`),
+  routing: (companyId: string, from?: string, to?: string, limit?: number) =>
+    api.get<OrchestrationCostReport>(
+      `/companies/${companyId}/costs/routing${dateParamsWithLimit(from, to, limit)}`,
+    ),
   quotaWindows: (companyId: string) =>
     api.get<ProviderQuotaResult[]>(`/companies/${companyId}/costs/quota-windows`),
 };

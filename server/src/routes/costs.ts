@@ -18,6 +18,7 @@ import {
   issueService,
   heartbeatService,
   accessService,
+  orchestrationCostService,
   logActivity,
 } from "../services/index.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
@@ -45,6 +46,21 @@ export function parseCostLimit(query: Record<string, unknown>) {
   return limit;
 }
 
+/**
+ * Cap for the number of root issue trees returned by the routing read model.
+ * Kept separate from `parseCostLimit` because the ceilings differ and the
+ * routing report defaults to "unset" rather than 100.
+ */
+export function parseOrchestrationTreeLimit(query: Record<string, unknown>) {
+  const raw = Array.isArray(query.limit) ? query.limit[0] : query.limit;
+  if (raw == null || raw === "") return undefined;
+  const limit = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(limit) || limit <= 0 || limit > 200) {
+    throw badRequest("invalid 'limit' value");
+  }
+  return limit;
+}
+
 export function costRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -57,6 +73,7 @@ export function costRoutes(
     cancelWorkForScope: heartbeat.cancelBudgetScopeWork,
   };
   const costs = costService(db, budgetHooks);
+  const orchestrationCosts = orchestrationCostService(db);
   const finance = financeService(db);
   const budgets = budgetService(db, budgetHooks);
   const companies = companyService(db);
@@ -205,6 +222,18 @@ export function costRoutes(
     const range = parseCostDateRange(req.query);
     const rows = await costs.byAgentModel(companyId, range);
     res.json(rows);
+  });
+
+  // Read-only orchestration-vs-execution split. Board and company-scoped
+  // actors only, same authorization gate as every other cost aggregate.
+  router.get("/companies/:companyId/costs/routing", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const limit = parseOrchestrationTreeLimit(req.query);
+    const report = await orchestrationCosts.report(companyId, range, { limit });
+    res.json(report);
   });
 
   router.get("/companies/:companyId/costs/by-provider", async (req, res) => {
