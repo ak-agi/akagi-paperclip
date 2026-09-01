@@ -4274,13 +4274,24 @@ export function agentRoutes(
       );
     }
     const touchesProfileFields = touchesAgentProfileChangeConsentFields(patchData);
-    const profileOnlyChange = touchesProfileFields && Object.keys(patchData).every((key) =>
-      (AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
+    const touchesNonProfileFields = Object.keys(patchData).some((key) =>
+      !(AGENT_PROFILE_CHANGE_CONSENT_FIELDS as readonly string[]).includes(key),
     );
-    if (profileOnlyChange) {
-      await assertCanApplyAgentProfileChange(req, existing);
-    } else {
+    // Gate on the intersection, not on profile-only-ness. Requiring every key
+    // in the patch to be a consent field made the gate trivially bypassable:
+    // `assertCanUpdateAgent` resolves to an unconditional self-allow for an
+    // agent-authenticated actor editing its own config, so appending one
+    // unrelated key (`{"tier":"principal","icon":"bot"}`) routed the whole
+    // patch — profile fields included — around the consent gate. A mixed patch
+    // must now clear BOTH checks: the ordinary update check covers the
+    // non-consent keys and the consent gate covers the profile keys. Neither
+    // check may stand in for the other. The ordinary check runs first so a
+    // request that is denied anyway never consumes a stored consent record.
+    if (touchesNonProfileFields || !touchesProfileFields) {
       await assertCanUpdateAgent(req, existing);
+    }
+    if (touchesProfileFields) {
+      await assertCanApplyAgentProfileChange(req, existing);
     }
 
     const actor = getActorInfo(req);

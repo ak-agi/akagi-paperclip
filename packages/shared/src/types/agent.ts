@@ -86,8 +86,15 @@ export interface Agent {
   name: string;
   urlKey: string;
   role: AgentRole;
-  /** Seniority tier. `null` means no tier is declared. */
-  tier: AgentTier | null;
+  /**
+   * Seniority tier. `null` means no tier is declared.
+   *
+   * Optional rather than required: `Agent` is re-exported from
+   * `@paperclipai/plugins-sdk`, so a required field would break every external
+   * plugin that constructs an `Agent` literal the moment it upgrades. The
+   * server always populates it (as `null` when undeclared).
+   */
+  tier?: AgentTier | null;
   title: string | null;
   icon: string | null;
   status: AgentStatus;
