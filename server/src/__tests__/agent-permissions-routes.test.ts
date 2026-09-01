@@ -976,10 +976,272 @@ describe.sequential("agent permission routes", () => {
           },
           modelProfiles: {
             cheap: { enabled: false },
+            senior: { enabled: false },
+            mid: { enabled: false },
+            junior: { enabled: false },
           },
         },
       }),
       { claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
+    );
+  });
+
+  it("seeds every work lane off for a new agent so no requester can pin an expensive lane", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      }));
+
+    expect([200, 201]).toContain(res.status);
+    const created = mockAgentService.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    const runtimeConfig = created.runtimeConfig as Record<string, unknown>;
+    expect(runtimeConfig.modelProfiles).toEqual({
+      cheap: { enabled: false },
+      senior: { enabled: false },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
+  it("keeps a work lane the create request enabled on purpose", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Builder",
+        role: "engineer",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          modelProfiles: {
+            senior: { enabled: true, adapterConfig: { model: "gpt-5.4" } },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const created = mockAgentService.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    const runtimeConfig = created.runtimeConfig as Record<string, unknown>;
+    expect(runtimeConfig.modelProfiles).toEqual({
+      senior: { enabled: true, adapterConfig: { model: "gpt-5.4" } },
+      cheap: { enabled: false },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
+  it("blocks an agent-authenticated create that pins a tier", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Principal Peer",
+        role: "engineer",
+        tier: "principal",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("tier");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("blocks an agent-authenticated hire that pins a tier", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Principal Peer",
+        role: "engineer",
+        tier: "principal",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("tier");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("lets an agent-authenticated create pass when it declares no tier", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Untiered Peer",
+        role: "engineer",
+        tier: null,
+        adapterType: "codex_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalled();
+  });
+
+  it("keeps a board create free to pin a tier", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Principal",
+        role: "engineer",
+        tier: "principal",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ tier: "principal" }),
+      expect.anything(),
+    );
+  });
+
+  it("blocks an agent-authenticated update that enables a work lane on itself", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "codex_local",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: {
+          modelProfiles: {
+            senior: { enabled: true, adapterConfig: { model: "gpt-5.4" } },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("work lane");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("keeps the agent-authenticated cheap recovery lane path unchanged", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "codex_local",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: {
+          modelProfiles: {
+            cheap: { enabled: true, adapterConfig: { model: "gpt-5.3-codex-spark" } },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  it("lets a board operator switch a work lane off", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "codex_local",
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const runtimeConfig = {
+      modelProfiles: {
+        senior: { enabled: false, adapterConfig: {} },
+      },
+    };
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({ runtimeConfig }),
+      expect.anything(),
     );
   });
 
@@ -1158,6 +1420,9 @@ describe.sequential("agent permission routes", () => {
           },
           modelProfiles: {
             cheap: { enabled: false },
+            senior: { enabled: false },
+            mid: { enabled: false },
+            junior: { enabled: false },
           },
         },
       }),

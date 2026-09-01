@@ -14,6 +14,8 @@ import {
   createAgentSchema,
   deriveAgentUrlKey,
   isUuidLike,
+  isWorkModelProfileKey,
+  MODEL_PROFILE_KEYS,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
@@ -1840,10 +1842,23 @@ export function agentRoutes(
 
     const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
     const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
-    if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
+    const missingProfileKeys = MODEL_PROFILE_KEYS.filter(
+      (key) => !Object.prototype.hasOwnProperty.call(modelProfiles, key),
+    );
+    if (missingProfileKeys.length > 0) {
       const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
-      if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
-        modelProfiles.cheap = { enabled: false };
+      // An absent runtime entry reads as ENABLED downstream
+      // (`readAgentRuntimeModelProfile`), so a new agent with no entry runs
+      // whatever lane a requester asks for. Every lane the adapter advertises
+      // is therefore seeded off, and the work lanes are seeded off for any
+      // adapter that advertises model profiles at all -- an adapter that gains
+      // a lane later must not silently re-open it on agents created today.
+      const adapterProfileKeys = new Set(adapterModelProfiles.map((profile) => profile.key));
+      const seedsWorkLanes = adapterModelProfiles.length > 0;
+      for (const key of missingProfileKeys) {
+        if (adapterProfileKeys.has(key) || (seedsWorkLanes && isWorkModelProfileKey(key))) {
+          modelProfiles[key] = { enabled: false };
+        }
       }
     }
     if (Object.keys(modelProfiles).length > 0) {
@@ -1887,6 +1902,44 @@ export function agentRoutes(
     for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
       assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
     }
+  }
+
+  // The work lanes are the operator's cost control. An agent-authenticated
+  // caller may already request a lane per issue, so letting the same caller
+  // enable a lane, or point it at a costlier model, would hand it the switch
+  // that is meant to bound it. `assertCanUpdateAgent` is a self-allow for an
+  // agent editing its own config, so nothing else stops this. The reserved
+  // `cheap` recovery lane keeps its existing path untouched.
+  function assertNoAgentWorkModelProfileMutation(req: Request, runtimeConfig: unknown) {
+    if (req.actor.type !== "agent") return;
+    const modelProfiles = asRecord(asRecord(runtimeConfig)?.modelProfiles);
+    if (!modelProfiles) return;
+    const changedWorkLanes = Object.keys(modelProfiles)
+      .filter((key) => isWorkModelProfileKey(key))
+      .map((key) => `runtimeConfig.modelProfiles.${key}`);
+    if (changedWorkLanes.length === 0) return;
+    throw forbidden(
+      `Agent-authenticated callers cannot change a model work lane (${changedWorkLanes.join(", ")}). `
+        + "A board operator owns work lane enablement and configuration.",
+      { code: "agent_work_model_profile_change_forbidden" },
+    );
+  }
+
+  // The profile consent gate is PATCH-only: it keys on `agent:<id>:profile`,
+  // which does not exist before the agent does. `tier` is the one consent
+  // field that is optional at creation and that a later wave binds to a model
+  // lane, so an agent principal with `agents:create` must not be able to spawn
+  // a peer straight into an expensive tier. Creating the agent untiered stays
+  // allowed: `null` is the pre-existing behaviour, and the tier can then be
+  // set through the consent-gated PATCH path.
+  function assertNoAgentActorCreateTier(req: Request, tier: unknown) {
+    if (req.actor.type !== "agent") return;
+    if (tier === undefined || tier === null) return;
+    throw forbidden(
+      "Agent-authenticated callers cannot set an agent tier at creation time. Create the agent with no tier, "
+        + "then set the tier through PATCH /api/agents/:id, which requires recorded human consent.",
+      { code: "agent_create_tier_forbidden" },
+    );
   }
 
   async function normalizeMediatedAdapterConfigForPersistence(input: {
@@ -3534,6 +3587,8 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    assertNoAgentWorkModelProfileMutation(req, hireInput.runtimeConfig);
+    assertNoAgentActorCreateTier(req, hireInput.tier);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3753,6 +3808,8 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertNoAgentWorkModelProfileMutation(req, createInput.runtimeConfig);
+    assertNoAgentActorCreateTier(req, createInput.tier);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -4196,6 +4253,7 @@ export function agentRoutes(
         return;
       }
       assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      assertNoAgentWorkModelProfileMutation(req, runtimeConfig);
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =

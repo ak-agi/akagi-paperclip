@@ -1,11 +1,11 @@
-import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, type Agent, type ModelProfileKey } from "@paperclipai/shared";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;
   adapterConfig?: Record<string, unknown>;
   /**
-   * Mark the cheap profile for clearing. When true, the patch removes
-   * `runtimeConfig.modelProfiles.cheap` instead of merging into it.
+   * Mark this lane for clearing. When true, the patch removes
+   * `runtimeConfig.modelProfiles.<lane>` instead of merging into it.
    */
   cleared?: boolean;
 }
@@ -16,7 +16,12 @@ export interface AgentConfigOverlay {
   adapterConfig: Record<string, unknown>;
   heartbeat: Record<string, unknown>;
   runtime: Record<string, unknown>;
-  modelProfiles?: { cheap?: AgentModelProfileOverlay };
+  /**
+   * Every lane in the ladder, not only `cheap`. A cheap-only overlay made the
+   * work lanes unreachable from the board, so an operator had no way to switch
+   * off a lane that an issue override could already request.
+   */
+  modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileOverlay>>;
 }
 
 export function omitUndefinedEntries(value: Record<string, unknown>) {
@@ -57,8 +62,9 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.replaceAdapterConfig = true;
   }
 
-  const cheapOverlay = overlay.modelProfiles?.cheap;
-  const hasModelProfileChange = cheapOverlay !== undefined;
+  const modelProfileOverlayEntries = Object.entries(overlay.modelProfiles ?? {})
+    .filter((entry): entry is [string, AgentModelProfileOverlay] => entry[1] !== undefined);
+  const hasModelProfileChange = modelProfileOverlayEntries.length > 0;
 
   if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -72,19 +78,21 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
     if (hasModelProfileChange) {
       const existingProfiles = ((existingRc.modelProfiles ?? {}) as Record<string, unknown>);
-      const existingCheap = ((existingProfiles.cheap ?? {}) as Record<string, unknown>);
       const nextProfiles = { ...existingProfiles };
 
-      if (cheapOverlay?.cleared) {
-        delete nextProfiles.cheap;
-      } else if (cheapOverlay) {
+      for (const [profileKey, profileOverlay] of modelProfileOverlayEntries) {
+        const existingProfile = ((existingProfiles[profileKey] ?? {}) as Record<string, unknown>);
+        if (profileOverlay.cleared) {
+          delete nextProfiles[profileKey];
+          continue;
+        }
         const mergedAdapterConfig = {
-          ...((existingCheap.adapterConfig ?? {}) as Record<string, unknown>),
-          ...(cheapOverlay.adapterConfig ?? {}),
+          ...((existingProfile.adapterConfig ?? {}) as Record<string, unknown>),
+          ...(profileOverlay.adapterConfig ?? {}),
         };
-        const enabled = cheapOverlay.enabled ?? (existingCheap.enabled !== false);
-        nextProfiles.cheap = {
-          ...existingCheap,
+        const enabled = profileOverlay.enabled ?? (existingProfile.enabled !== false);
+        nextProfiles[profileKey] = {
+          ...existingProfile,
           enabled,
           adapterConfig: mergedAdapterConfig,
         };

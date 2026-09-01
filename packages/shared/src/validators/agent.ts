@@ -5,6 +5,7 @@ import {
   AGENT_STATUSES,
   AGENT_TIERS,
   INBOX_MINE_ISSUE_STATUS_FILTER,
+  MODEL_PROFILE_KEYS,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
 import { envConfigSchema } from "./secret.js";
@@ -61,13 +62,25 @@ export const createAgentInstructionsBundleSchema = z.object({
 const agentModelProfileConfigSchema = z.object({
   enabled: z.boolean().optional(),
   label: z.string().trim().min(1).optional(),
-  adapterConfig: adapterConfigSchema,
+  // Optional so that switching a lane off is expressible on its own. The
+  // enable path always carries a config; the disable path -- the operator kill
+  // switch -- must not be harder to reach than the enable path.
+  adapterConfig: adapterConfigSchema.optional(),
 }).strict();
 
+// Every lane in the ladder, not only `cheap`. The one-key shape predates the
+// senior/mid/junior work lanes: it silently made the work lanes unwritable
+// through the API, so a lane an issue override could already request had no
+// disable path at all. The keys come from the shared constant so a later lane
+// cannot fall out of the contract again.
+const agentModelProfilesSchema = z.object(
+  Object.fromEntries(
+    MODEL_PROFILE_KEYS.map((key) => [key, agentModelProfileConfigSchema.optional()]),
+  ) as Record<(typeof MODEL_PROFILE_KEYS)[number], z.ZodOptional<typeof agentModelProfileConfigSchema>>,
+).strict();
+
 export const agentRuntimeConfigSchema = z.object({
-  modelProfiles: z.object({
-    cheap: agentModelProfileConfigSchema.optional(),
-  }).strict().optional(),
+  modelProfiles: agentModelProfilesSchema.optional(),
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({

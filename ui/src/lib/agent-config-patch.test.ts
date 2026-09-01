@@ -246,3 +246,99 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 });
+
+describe("buildAgentUpdatePatch work lanes", () => {
+  it("writes a disabled senior work lane without touching the cheap recovery lane", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          senior: { enabled: false },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+      senior: { enabled: false, adapterConfig: {} },
+    });
+  });
+
+  it("merges a work-lane model onto the existing lane state", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        mid: { enabled: false, adapterConfig: { model: "old-mid" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          mid: { adapterConfig: { model: "claude-sonnet-4-6" } },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      mid: { enabled: false, adapterConfig: { model: "claude-sonnet-4-6" } },
+    });
+  });
+
+  it("writes several lanes in one patch", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        modelProfiles: {
+          senior: { enabled: false },
+          mid: { enabled: true, adapterConfig: { model: "sonnet" } },
+          junior: { enabled: true, adapterConfig: { model: "haiku" } },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      senior: { enabled: false, adapterConfig: {} },
+      mid: { enabled: true, adapterConfig: { model: "sonnet" } },
+      junior: { enabled: true, adapterConfig: { model: "haiku" } },
+    });
+  });
+
+  it("clears every lane when the adapter type changes", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+        senior: { enabled: true, adapterConfig: { model: "claude-opus-4-8" } },
+        mid: { enabled: true, adapterConfig: { model: "claude-sonnet-4-6" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          cheap: { cleared: true },
+          senior: { cleared: true },
+          mid: { cleared: true },
+          junior: { cleared: true },
+        },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({
+      heartbeat: { enabled: true, intervalSec: 300 },
+    });
+  });
+});

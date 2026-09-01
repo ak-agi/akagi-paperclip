@@ -157,7 +157,7 @@ Invariant: every business record belongs to exactly one company.
 - `capabilities` text null
 - `adapter_type` text; built-ins include `process`, `http`, `claude_local`, `codex_local`, `gemini_local`, `opencode_local`, `pi_local`, `cursor`, `hermes_local`, `hermes_gateway`, and `openclaw_gateway`
 - `adapter_config` jsonb not null
-- `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.cheap.adapterConfig` for an optional low-cost model lane that does not change the primary adapter config
+- `runtime_config` jsonb not null default `{}`; may include Paperclip runtime policy such as `modelProfiles.<lane>.{enabled,adapterConfig}` for the model lanes in §11.5, none of which change the primary adapter config
 - `default_environment_id` uuid fk `environments.id` null
 - `context_mode` enum: `thin | fat` default `thin`
 - `budget_monthly_cents` int not null default 0
@@ -1273,6 +1273,19 @@ Nothing selects a work lane automatically. There is no tier-driven or cost-drive
 Adapters declare the lanes they support through the `modelProfiles` registry field, and a lane exists for an adapter only if that adapter opted in. Requesting a lane an adapter does not declare is not an error: `resolveModelProfileApplication()` returns `applied: null` with `fallbackReason: "adapter_profile_not_supported"` and the run continues on the agent's primary model. An agent may disable a declared lane through its runtime config, which yields `fallbackReason: "agent_runtime_profile_disabled"` with the same graceful degradation.
 
 A status-only recovery run may not pin a downstream issue to any lane. `POST /issues`, `POST /issues/:id/children` and `PATCH /issues/:id` reject an `assigneeAdapterOverrides.modelProfile` from a run whose context carries the §11.5.1 guards, for every lane and not only `cheap`.
+
+### 11.5.4 Lane enablement (the operator kill switch)
+
+A lane entry lives at `agents.runtime_config.modelProfiles.<lane>`. An **absent** entry reads as enabled, so enablement has to be written down to be denied.
+
+- **New agents start with every lane off.** `POST /companies/:companyId/agents` and `POST /companies/:companyId/agent-hires` seed `{ enabled: false }` for each lane the adapter declares, and for all three work lanes on any adapter that declares model profiles at all — an adapter that gains a lane later must not silently open it on agents created before. Company import seeds the same work-lane default. A create request that declares a lane itself is left as declared.
+- **Only a board operator changes a work lane.** An agent-authenticated caller that writes `runtimeConfig.modelProfiles.<work lane>` on create, hire or PATCH is rejected with `403 agent_work_model_profile_change_forbidden`. The same caller may already request a lane per issue, so letting it enable a lane or repoint one at a costlier model would hand it the switch that bounds it. The reserved `cheap` recovery lane keeps its existing path.
+- **Existing agents are not backfilled.** An agent created before this rule keeps absent work-lane entries, which still read as enabled. Board → agent config is where an operator switches them off.
+- A disabled lane degrades exactly like an undeclared one: `applied: null`, `fallbackReason: "agent_runtime_profile_disabled"`, run continues on the primary model.
+
+### 11.5.5 Tier at creation time
+
+The agent profile consent gate (`AGENT_PROFILE_CHANGE_CONSENT_FIELDS`) is PATCH-only, because it keys on `agent:<id>:profile` and that id does not exist before the agent does. `tier` is the one consent field that is optional at creation and that a later change binds to a work lane, so an agent-authenticated caller may not set it on `POST /agents` or `POST /agent-hires`: the request is rejected with `403 agent_create_tier_forbidden`. Creating the agent with no tier stays allowed — `null` is the pre-existing behaviour — and the tier is then set through the consent-gated PATCH path. A board actor is unaffected.
 
 ## 11.6 Scheduler Rules
 

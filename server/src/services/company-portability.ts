@@ -63,6 +63,7 @@ import {
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
+  WORK_MODEL_PROFILE_KEYS,
 } from "@paperclipai/shared";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
@@ -1313,6 +1314,24 @@ function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
     heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
   next.heartbeat = heartbeat;
+  return next;
+}
+
+// An absent runtime lane entry reads as ENABLED at dispatch, so an imported
+// agent would otherwise run whatever work lane a requester asks for, with no
+// operator decision anywhere. Import is the second create path, so it seeds
+// the same default the agent routes do: every work lane off unless the bundle
+// declares one. `cheap` is left exactly as the bundle declares it -- it is the
+// reserved status-only recovery lane, not a work lane.
+function disableImportedWorkModelProfiles(runtimeConfig: unknown) {
+  const next = clonePortableRecord(runtimeConfig) ?? {};
+  const modelProfiles = isPlainRecord(next.modelProfiles) ? { ...next.modelProfiles } : {};
+  for (const key of WORK_MODEL_PROFILE_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(modelProfiles, key)) {
+      modelProfiles[key] = { enabled: false };
+    }
+  }
+  next.modelProfiles = modelProfiles;
   return next;
 }
 
@@ -5586,7 +5605,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
             adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            runtimeConfig: disableImportedWorkModelProfiles(
+              disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            ),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
