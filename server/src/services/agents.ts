@@ -21,8 +21,10 @@ import {
   getAgentWorkEligibility,
   isAgentTier,
   isUuidLike,
+  mergeStoredModelProfiles,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
+  seedDisabledWorkModelProfiles,
   type AgentEligibilityAgent,
   type AgentApiKeyScope,
 } from "@paperclipai/shared";
@@ -239,7 +241,13 @@ function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<strin
     heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
   normalizedRuntimeConfig.heartbeat = heartbeat;
-  return normalizedRuntimeConfig;
+  // Seed the work lanes here, at the one choke point every create path goes
+  // through. Seeding only in `POST /companies/:id/agents` and `/agent-hires`
+  // left three create paths open -- join-request approval (`routes/access.ts`,
+  // gated on the grantable `joins:approve` permission) and both built-in agent
+  // provisioning paths all passed `runtimeConfig: {}`, and an absent lane entry
+  // reads as ENABLED at dispatch.
+  return seedDisabledWorkModelProfiles(normalizedRuntimeConfig);
 }
 
 function diffConfigSnapshot(
@@ -1103,6 +1111,18 @@ export function agentService(db: Db) {
       }
 
       const patch = configPatchFromSnapshot(revision.afterConfig);
+      // A rollback restores `runtimeConfig` wholesale, and an absent lane entry
+      // reads as ENABLED at dispatch, so restoring a revision captured before
+      // the kill switch existed would silently switch every work lane back on.
+      // Apply the same rule the PATCH path applies: the lane map is never
+      // reduced by a write. A lane the snapshot declares is restored; a lane it
+      // does not mention keeps its current entry.
+      const current = await db
+        .select({ runtimeConfig: agents.runtimeConfig })
+        .from(agents)
+        .where(eq(agents.id, id))
+        .then((rows) => rows[0] ?? null);
+      patch.runtimeConfig = mergeStoredModelProfiles(current?.runtimeConfig, patch.runtimeConfig);
       return updateAgent(id, patch, {
         recordRevision: {
           createdByAgentId: actor.agentId ?? null,

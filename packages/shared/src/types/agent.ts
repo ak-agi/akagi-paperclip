@@ -27,7 +27,13 @@ export interface AgentPermissions extends Record<string, unknown> {
 export interface AgentModelProfileConfig {
   enabled?: boolean;
   label?: string;
-  adapterConfig: Record<string, unknown>;
+  /**
+   * Optional, matching `agentModelProfileConfigSchema`. A lane switched off
+   * carries no adapter config -- the stored kill-switch entry is literally
+   * `{ enabled: false }` -- and the type has to say so or every reader of a
+   * seeded lane is typed against a shape the database never holds.
+   */
+  adapterConfig?: Record<string, unknown>;
 }
 
 export interface AgentRuntimeConfig extends Record<string, unknown> {

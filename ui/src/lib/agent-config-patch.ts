@@ -1,13 +1,19 @@
-import { ADAPTER_AGNOSTIC_KEYS, type Agent } from "@paperclipai/shared";
+import { ADAPTER_AGNOSTIC_KEYS, type Agent, type ModelProfileKey } from "@paperclipai/shared";
 
 export interface AgentModelProfileOverlay {
   enabled?: boolean;
   adapterConfig?: Record<string, unknown>;
   /**
-   * Mark the cheap profile for clearing. When true, the patch removes
-   * `runtimeConfig.modelProfiles.cheap` instead of merging into it.
+   * Drop this lane's adapter-specific settings (a model id belongs to one
+   * adapter) WITHOUT touching its on/off switch.
+   *
+   * This used to delete the whole `runtimeConfig.modelProfiles.<lane>` entry.
+   * An absent entry reads as ENABLED at dispatch, so switching an agent's
+   * adapter type silently re-enabled every work lane the operator had turned
+   * off. The switch is the operator's cost control and is not adapter-specific,
+   * so it survives the adapter change; only `adapterConfig` is reset.
    */
-  cleared?: boolean;
+  resetAdapterConfig?: boolean;
 }
 
 export interface AgentConfigOverlay {
@@ -16,7 +22,12 @@ export interface AgentConfigOverlay {
   adapterConfig: Record<string, unknown>;
   heartbeat: Record<string, unknown>;
   runtime: Record<string, unknown>;
-  modelProfiles?: { cheap?: AgentModelProfileOverlay };
+  /**
+   * Every lane in the ladder, not only `cheap`. A cheap-only overlay made the
+   * work lanes unreachable from the board, so an operator had no way to switch
+   * off a lane that an issue override could already request.
+   */
+  modelProfiles?: Partial<Record<ModelProfileKey, AgentModelProfileOverlay>>;
 }
 
 export function omitUndefinedEntries(value: Record<string, unknown>) {
@@ -57,8 +68,9 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.replaceAdapterConfig = true;
   }
 
-  const cheapOverlay = overlay.modelProfiles?.cheap;
-  const hasModelProfileChange = cheapOverlay !== undefined;
+  const modelProfileOverlayEntries = Object.entries(overlay.modelProfiles ?? {})
+    .filter((entry): entry is [string, AgentModelProfileOverlay] => entry[1] !== undefined);
+  const hasModelProfileChange = modelProfileOverlayEntries.length > 0;
 
   if (Object.keys(overlay.heartbeat).length > 0 || hasModelProfileChange) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
@@ -72,19 +84,32 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
     if (hasModelProfileChange) {
       const existingProfiles = ((existingRc.modelProfiles ?? {}) as Record<string, unknown>);
-      const existingCheap = ((existingProfiles.cheap ?? {}) as Record<string, unknown>);
       const nextProfiles = { ...existingProfiles };
 
-      if (cheapOverlay?.cleared) {
-        delete nextProfiles.cheap;
-      } else if (cheapOverlay) {
+      for (const [profileKey, profileOverlay] of modelProfileOverlayEntries) {
+        const existingProfile = ((existingProfiles[profileKey] ?? {}) as Record<string, unknown>);
+        if (profileOverlay.resetAdapterConfig) {
+          // A lane the agent never had an entry for stays absent. Writing
+          // `{ enabled: true }` here would turn an implicit default into an
+          // explicit enable that the operator never asked for.
+          if (existingProfiles[profileKey] === undefined) {
+            delete nextProfiles[profileKey];
+            continue;
+          }
+          nextProfiles[profileKey] = {
+            ...existingProfile,
+            enabled: existingProfile.enabled !== false,
+            adapterConfig: {},
+          };
+          continue;
+        }
         const mergedAdapterConfig = {
-          ...((existingCheap.adapterConfig ?? {}) as Record<string, unknown>),
-          ...(cheapOverlay.adapterConfig ?? {}),
+          ...((existingProfile.adapterConfig ?? {}) as Record<string, unknown>),
+          ...(profileOverlay.adapterConfig ?? {}),
         };
-        const enabled = cheapOverlay.enabled ?? (existingCheap.enabled !== false);
-        nextProfiles.cheap = {
-          ...existingCheap,
+        const enabled = profileOverlay.enabled ?? (existingProfile.enabled !== false);
+        nextProfiles[profileKey] = {
+          ...existingProfile,
           enabled,
           adapterConfig: mergedAdapterConfig,
         };

@@ -595,6 +595,8 @@ A status-only recovery run also may not pin a downstream issue to any lane — t
 
 Selecting a work lane on an adapter that does not declare it is not an error. Lane resolution records `fallbackReason: "adapter_profile_not_supported"` and the run proceeds on the agent's primary model.
 
+A work lane an operator has switched off degrades the same way, with `fallbackReason: "agent_runtime_profile_disabled"`. An absent `runtime_config.modelProfiles.<lane>` entry reads as **enabled**, so new agents are created with every work lane written off and a board operator switches on the lanes an agent may use. Because absence means enabled, deleting a lane entry is an escalation: no write path reduces the lane map, and a `runtime_config` replacement that omits a lane keeps the stored entry rather than dropping it. An agent-authenticated caller cannot change a work lane on itself or on a peer, on any path — create, hire, PATCH, config-revision rollback, or `agent_safe` company import. See `SPEC-implementation.md` §11.5.4.
+
 **Forward note (tier escalation).** A later change binds agent tier to the work lanes and lets a tier-limited agent escalate upward when it cannot proceed. That escalation inherits the context-scrubbing rule stated above rather than defining a new one: the failed reasoning chain must be scrubbed from the escalated context, and the higher tier re-specifies from the original task. The rule is stated once here and applies to both recovery hand-back and tier escalation.
 
 ## 10. Startup and Periodic Reconciliation

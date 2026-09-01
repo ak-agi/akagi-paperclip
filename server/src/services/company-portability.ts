@@ -46,6 +46,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  forceDisabledWorkModelProfiles,
   isAgentTier,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
@@ -63,6 +64,7 @@ import {
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
+  seedDisabledWorkModelProfiles,
 } from "@paperclipai/shared";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
@@ -1314,6 +1316,25 @@ function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
   }
   next.heartbeat = heartbeat;
   return next;
+}
+
+// An absent runtime lane entry reads as ENABLED at dispatch, so an imported
+// agent would otherwise run whatever work lane a requester asks for, with no
+// operator decision anywhere. `cheap` is left exactly as the bundle declares it
+// -- it is the reserved status-only recovery lane, not a work lane.
+//
+// `board_full` fills only the ABSENT lanes: a board operator vetted the bundle,
+// so a lane it declares is an operator decision. `agent_safe` FORCES every work
+// lane off: on that route the caller supplies the whole bundle, so filling only
+// the absent lanes is not a control at all -- a same-company CEO agent simply
+// declares `runtime.modelProfiles.senior: {enabled: true, adapterConfig:
+// {model: ...}}` in the manifest it posts and lands the lane enabled, on a
+// model it picked, with nothing board-vetted anywhere on the path.
+function disableImportedWorkModelProfiles(runtimeConfig: unknown, mode: ImportMode) {
+  const next = clonePortableRecord(runtimeConfig) ?? {};
+  return mode === "agent_safe"
+    ? forceDisabledWorkModelProfiles(next)
+    : seedDisabledWorkModelProfiles(next);
 }
 
 function normalizePortableProjectWorkspaceExtension(
@@ -5579,14 +5600,25 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
-            tier: isAgentTier(manifestAgent.tier) ? manifestAgent.tier : null,
+            // Same reasoning as the work lanes: the `agent_safe` caller writes
+            // the manifest, and `tier` is the seniority field a later wave
+            // binds to a model lane, so an unvetted bundle must not be able to
+            // spawn a peer straight into `principal`. It matches the
+            // `agent_create_tier_forbidden` rule on the agent create routes --
+            // create untiered, then tier through the consent-gated PATCH.
+            tier: mode === "agent_safe"
+              ? null
+              : (isAgentTier(manifestAgent.tier) ? manifestAgent.tier : null),
             title: manifestAgent.title,
             icon: manifestAgent.icon,
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
             adapterConfig: normalizedAdapter.adapterConfig,
-            runtimeConfig: disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+            runtimeConfig: disableImportedWorkModelProfiles(
+              disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+              mode,
+            ),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,

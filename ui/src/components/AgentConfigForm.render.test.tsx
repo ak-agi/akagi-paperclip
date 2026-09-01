@@ -908,6 +908,104 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("Hermes Gateway fields");
   });
 
+  it("shows a switch for every work lane the adapter advertises", async () => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([
+      { key: "cheap", label: "Cheap", description: "Recovery lane.", adapterConfig: {}, source: "adapter_default" },
+      { key: "senior", label: "Senior", description: "Hard tasks.", adapterConfig: { model: "gpt-5.4" }, source: "adapter_default" },
+      { key: "mid", label: "Mid", description: "Ordinary tasks.", adapterConfig: { model: "gpt-5.4-mini" }, source: "adapter_default" },
+      { key: "junior", label: "Junior", description: "Simple tasks.", adapterConfig: { model: "gpt-5.4-nano" }, source: "adapter_default" },
+    ]);
+
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ], {
+      runtimeConfig: {
+        modelProfiles: {
+          senior: { enabled: false, adapterConfig: {} },
+          mid: { enabled: true, adapterConfig: { model: "gpt-5.4-mini" } },
+        },
+      },
+    });
+    roots.push(result.root);
+
+    const section = result.container.querySelector('[data-testid="agent-work-lanes"]');
+    expect(section).toBeTruthy();
+    expect(section?.textContent).toContain("Work lanes");
+
+    const seniorSwitch = findByAriaLabel(result.container, "Senior work lane");
+    const midSwitch = findByAriaLabel(result.container, "Mid work lane");
+    const juniorSwitch = findByAriaLabel(result.container, "Junior work lane");
+    expect(seniorSwitch?.getAttribute("aria-checked")).toBe("false");
+    expect(midSwitch?.getAttribute("aria-checked")).toBe("true");
+    // No stored entry reads as enabled at dispatch, so the form shows it on.
+    expect(juniorSwitch?.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("switches a work lane off and saves the disabled lane", async () => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([
+      { key: "senior", label: "Senior", description: "Hard tasks.", adapterConfig: { model: "gpt-5.4" }, source: "adapter_default" },
+    ]);
+
+    const onSave = vi.fn();
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({ runtimeConfig: {} })}
+                onSave={onSave}
+                hidePromptTemplate
+                showAdapterTypeField={false}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const seniorSwitch = findByAriaLabel(container, "Senior work lane");
+    expect(seniorSwitch?.getAttribute("aria-checked")).toBe("true");
+    await clickElement(seniorSwitch);
+    expect(findByAriaLabel(container, "Senior work lane")?.getAttribute("aria-checked")).toBe("false");
+
+    await clickByText(container, "Save");
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    const patch = onSave.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toMatchObject({
+      senior: { enabled: false },
+    });
+  });
+
+  it("tells the create form that work lanes start off", async () => {
+    mockAgentsApi.adapterModelProfiles.mockResolvedValue([
+      { key: "senior", label: "Senior", description: "Hard tasks.", adapterConfig: { model: "gpt-5.4" }, source: "adapter_default" },
+    ]);
+
+    const result = await renderCreateForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+
+    const section = result.container.querySelector('[data-testid="agent-work-lanes"]');
+    expect(section?.textContent).toContain("New agents start with every work lane off");
+    expect(findByAriaLabel(result.container, "Senior work lane")).toBeNull();
+  });
+
   it("tests both the primary and cheap models when a cheap profile is configured", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),

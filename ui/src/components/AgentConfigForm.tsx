@@ -10,7 +10,7 @@ import type {
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, AGENT_TIERS, AGENT_TIER_LABELS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, AGENT_TIERS, AGENT_TIER_LABELS, MODEL_PROFILE_KEYS, WORK_MODEL_PROFILE_KEYS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE, type ModelProfileKey, type WorkModelProfileKey } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -150,7 +150,7 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.adapterConfig).length > 0 ||
     Object.keys(o.heartbeat).length > 0 ||
     Object.keys(o.runtime).length > 0 ||
-    o.modelProfiles?.cheap !== undefined
+    Object.values(o.modelProfiles ?? {}).some((profile) => profile !== undefined)
   );
 }
 
@@ -763,6 +763,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [cheapModelOpen, setCheapModelOpen] = useState(false);
+  const [openWorkLane, setOpenWorkLane] = useState<WorkModelProfileKey | null>(null);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
 
   // Cheap model profile state — only relevant when the adapter advertises
@@ -785,6 +786,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     const value = (adapterConfig as Record<string, unknown>).model;
     return typeof value === "string" ? value : "";
   }, [adapterCheapDefault]);
+  // The work lanes the adapter advertises, in ladder order. `cheap` is left
+  // out on purpose: it is the reserved status-only recovery lane, not a work
+  // lane, and it keeps its own section.
+  const adapterWorkLaneDefinitions = useMemo(() => {
+    const definitions = adapterCheapProfileDefinitions ?? [];
+    return WORK_MODEL_PROFILE_KEYS
+      .map((key) => definitions.find((profile) => profile.key === key) ?? null)
+      .filter((profile): profile is NonNullable<typeof profile> => profile !== null);
+  }, [adapterCheapProfileDefinitions]);
 
   function buildAdapterConfigForTest(adapterConfigPatch?: Record<string, unknown>): Record<string, unknown> {
     if (isCreate) {
@@ -1215,16 +1225,23 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Cheap profile read/write helpers. Edit-mode values come from
   // runtimeConfig.modelProfiles.cheap with overlay overrides on top; create-mode
   // values come straight from CreateConfigValues (cheapModel + cheapModelEnabled).
-  const cheapProfileFromAgent = useMemo(() => {
+  const modelProfilesFromAgent = useMemo(() => {
     const profiles = (runtimeConfig.modelProfiles ?? {}) as Record<string, unknown>;
-    const cheap = (profiles.cheap ?? {}) as Record<string, unknown>;
-    const cheapAdapterConfig = asObject(cheap.adapterConfig);
-    return {
-      enabled: cheap.enabled !== false,
-      adapterConfig: cheapAdapterConfig,
-      model: typeof cheapAdapterConfig.model === "string" ? cheapAdapterConfig.model : "",
-    };
+    return Object.fromEntries(
+      MODEL_PROFILE_KEYS.map((key) => {
+        const profile = (profiles[key] ?? {}) as Record<string, unknown>;
+        const profileAdapterConfig = asObject(profile.adapterConfig);
+        return [key, {
+          // An absent runtime entry reads as enabled at dispatch, so the form
+          // shows the same thing the runtime does.
+          enabled: profile.enabled !== false,
+          adapterConfig: profileAdapterConfig,
+          model: typeof profileAdapterConfig.model === "string" ? profileAdapterConfig.model : "",
+        }];
+      }),
+    ) as Record<ModelProfileKey, { enabled: boolean; adapterConfig: Record<string, unknown>; model: string }>;
   }, [runtimeConfig]);
+  const cheapProfileFromAgent = modelProfilesFromAgent.cheap;
   const cheapOverlay = !isCreate ? overlay.modelProfiles?.cheap : undefined;
   const currentCheapEnabled = isCreate
     ? val!.cheapModelEnabled ?? false
@@ -1237,29 +1254,25 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         return cheapProfileFromAgent.model;
       })();
 
-  function setCheapEnabled(next: boolean) {
-    if (isCreate) {
-      set!({ cheapModelEnabled: next });
-      return;
-    }
+  // Lane-keyed overlay writers. They merge into the pending lane map instead of
+  // replacing it, so editing one lane never discards an unsaved edit on
+  // another.
+  function setModelProfileEnabled(key: ModelProfileKey, next: boolean) {
     setOverlay((prev) => ({
       ...prev,
       modelProfiles: {
-        cheap: {
-          ...(prev.modelProfiles?.cheap ?? {}),
+        ...(prev.modelProfiles ?? {}),
+        [key]: {
+          ...(prev.modelProfiles?.[key] ?? {}),
           enabled: next,
         },
       },
     }));
   }
 
-  function setCheapModel(next: string) {
-    if (isCreate) {
-      set!({ cheapModel: next });
-      return;
-    }
+  function setModelProfileModel(key: ModelProfileKey, next: string) {
     setOverlay((prev) => {
-      const existing = prev.modelProfiles?.cheap ?? {};
+      const existing = prev.modelProfiles?.[key] ?? {};
       const nextAdapterConfig = {
         ...((existing.adapterConfig ?? {}) as Record<string, unknown>),
         model: next || undefined,
@@ -1267,13 +1280,30 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       return {
         ...prev,
         modelProfiles: {
-          cheap: {
+          ...(prev.modelProfiles ?? {}),
+          [key]: {
             ...existing,
             adapterConfig: nextAdapterConfig,
           },
         },
       };
     });
+  }
+
+  function setCheapEnabled(next: boolean) {
+    if (isCreate) {
+      set!({ cheapModelEnabled: next });
+      return;
+    }
+    setModelProfileEnabled("cheap", next);
+  }
+
+  function setCheapModel(next: string) {
+    if (isCreate) {
+      set!({ cheapModel: next });
+      return;
+    }
+    setModelProfileModel("cheap", next);
   }
 
   const effectiveRuntimeConfig = useMemo(() => {
@@ -1579,7 +1609,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      modelProfiles: { cheap: { cleared: true } },
+                      // A lane's MODEL is adapter-specific, so a new adapter
+                      // resets the whole ladder's adapter config -- but the
+                      // on/off switch is the operator's cost control and is not
+                      // adapter-specific, so it is preserved. Deleting the lane
+                      // entries here silently re-enabled every disabled work
+                      // lane, because an absent entry reads as enabled.
+                      modelProfiles: Object.fromEntries(
+                        MODEL_PROFILE_KEYS.map((key) => [key, { resetAdapterConfig: true }]),
+                      ),
                       adapterConfig: {
                         model:
                           t === "gemini_local"
@@ -1783,6 +1821,34 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   onModelChange={setCheapModel}
                   open={cheapModelOpen}
                   onOpenChange={setCheapModelOpen}
+                />
+              )}
+
+              {supportsModelProfiles && adapterWorkLaneDefinitions.length > 0 && (
+                <WorkLaneSection
+                  isCreate={isCreate}
+                  lanes={adapterWorkLaneDefinitions.map((definition) => {
+                    const key = definition.key as WorkModelProfileKey;
+                    const laneOverlay = isCreate ? undefined : overlay.modelProfiles?.[key];
+                    const fromAgent = modelProfilesFromAgent[key];
+                    const overlayModel = (laneOverlay?.adapterConfig as Record<string, unknown> | undefined)?.model;
+                    const adapterDefaultConfig = (definition.adapterConfig ?? {}) as Record<string, unknown>;
+                    return {
+                      key,
+                      label: definition.label || AGENT_TIER_LABELS[key],
+                      description: definition.description ?? "",
+                      enabled: laneOverlay?.enabled ?? fromAgent.enabled,
+                      model: typeof overlayModel === "string" ? overlayModel : fromAgent.model,
+                      adapterDefaultModel:
+                        typeof adapterDefaultConfig.model === "string" ? adapterDefaultConfig.model : "",
+                    };
+                  })}
+                  models={models}
+                  adapterType={adapterType}
+                  openLane={openWorkLane}
+                  onOpenLaneChange={setOpenWorkLane}
+                  onEnabledChange={(key, next) => setModelProfileEnabled(key, next)}
+                  onModelChange={(key, next) => setModelProfileModel(key, next)}
                 />
               )}
 
@@ -3351,6 +3417,101 @@ function CheapModelSection({
           No cheap model selected and the adapter has no default. Cheap-lane runs will continue on the primary model with a fallback note.
         </p>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The work lanes (`senior` / `mid` / `junior`). A lane with no stored runtime
+ * entry runs when any requester asks for it, so this section is the operator
+ * kill switch: it is the only place a lane can be switched off. It stays
+ * separate from the cheap section on purpose — cheap is the reserved
+ * status-only recovery lane and never carries deliverable work.
+ */
+function WorkLaneSection({
+  isCreate,
+  lanes,
+  models,
+  adapterType,
+  openLane,
+  onOpenLaneChange,
+  onEnabledChange,
+  onModelChange,
+}: {
+  isCreate: boolean;
+  lanes: Array<{
+    key: WorkModelProfileKey;
+    label: string;
+    description: string;
+    enabled: boolean;
+    model: string;
+    adapterDefaultModel: string;
+  }>;
+  models: AdapterModel[];
+  adapterType: string;
+  openLane: WorkModelProfileKey | null;
+  onOpenLaneChange: (lane: WorkModelProfileKey | null) => void;
+  onEnabledChange: (lane: WorkModelProfileKey, next: boolean) => void;
+  onModelChange: (lane: WorkModelProfileKey, next: string) => void;
+}) {
+  return (
+    <div className="rounded-md border border-border/70 bg-muted/20 p-3 space-y-3" data-testid="agent-work-lanes">
+      <div className="min-w-0">
+        <div className="text-(length:--text-micro) uppercase tracking-wide text-muted-foreground">Work lanes</div>
+        <p className="text-xs text-muted-foreground">
+          Lanes a task can request instead of the primary model. Switch a lane off to stop every run from using it.
+          The primary model stays unchanged.
+        </p>
+      </div>
+      {isCreate ? (
+        <p className="text-(length:--text-micro) text-muted-foreground">
+          New agents start with every work lane off. Switch on the lanes you want after you create the agent.
+        </p>
+      ) : (
+        lanes.map((lane) => {
+          const placeholderHint = lane.adapterDefaultModel
+            ? `Adapter default · ${lane.adapterDefaultModel}`
+            : "No adapter default — choose a model";
+          return (
+            <div key={lane.key} className="space-y-2 border-t border-border/70 pt-3 first:border-t-0 first:pt-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">{lane.label}</div>
+                  {lane.description ? (
+                    <p className="text-xs text-muted-foreground">{lane.description}</p>
+                  ) : null}
+                </div>
+                <ToggleSwitch
+                  checked={lane.enabled}
+                  onCheckedChange={(next) => onEnabledChange(lane.key, next)}
+                  aria-label={`${lane.label} work lane`}
+                />
+              </div>
+              {lane.enabled ? (
+                <ModelDropdown
+                  models={models}
+                  value={lane.model}
+                  onChange={(next) => onModelChange(lane.key, next)}
+                  open={openLane === lane.key}
+                  onOpenChange={(open) => onOpenLaneChange(open ? lane.key : null)}
+                  allowDefault
+                  required={false}
+                  groupByProvider={adapterType === "opencode_local"}
+                  creatable
+                  detectedModel={null}
+                  detectedModelCandidates={[]}
+                  emptyDetectHint={placeholderHint}
+                  defaultLabel={placeholderHint}
+                />
+              ) : (
+                <p className="text-(length:--text-micro) text-muted-foreground">
+                  Off — a run that requests this lane falls back to the primary model and records the fallback.
+                </p>
+              )}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

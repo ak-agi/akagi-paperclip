@@ -169,7 +169,7 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
-  it("clears the cheap profile when the overlay marks it cleared", () => {
+  it("resets the cheap profile adapter config but keeps its switch", () => {
     const agent = makeAgent();
     agent.runtimeConfig = {
       heartbeat: { enabled: true, intervalSec: 300 },
@@ -184,12 +184,13 @@ describe("buildAgentUpdatePatch", () => {
     const patch = buildAgentUpdatePatch(
       agent,
       makeOverlay({
-        modelProfiles: { cheap: { cleared: true } },
+        modelProfiles: { cheap: { resetAdapterConfig: true } },
       }),
     );
 
     expect(patch.runtimeConfig).toEqual({
       heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: { cheap: { enabled: true, adapterConfig: {} } },
     });
   });
 
@@ -243,6 +244,170 @@ describe("buildAgentUpdatePatch", () => {
 
     expect((patch.adapterConfig as Record<string, unknown>).paperclipSkillSync).toEqual({
       desiredSkills: ["research", "code-review"],
+    });
+  });
+});
+
+describe("buildAgentUpdatePatch work lanes", () => {
+  it("writes a disabled senior work lane without touching the cheap recovery lane", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          senior: { enabled: false },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+      senior: { enabled: false, adapterConfig: {} },
+    });
+  });
+
+  it("merges a work-lane model onto the existing lane state", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        mid: { enabled: false, adapterConfig: { model: "old-mid" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          mid: { adapterConfig: { model: "claude-sonnet-4-6" } },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      mid: { enabled: false, adapterConfig: { model: "claude-sonnet-4-6" } },
+    });
+  });
+
+  it("writes several lanes in one patch", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({
+        modelProfiles: {
+          senior: { enabled: false },
+          mid: { enabled: true, adapterConfig: { model: "sonnet" } },
+          junior: { enabled: true, adapterConfig: { model: "haiku" } },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      senior: { enabled: false, adapterConfig: {} },
+      mid: { enabled: true, adapterConfig: { model: "sonnet" } },
+      junior: { enabled: true, adapterConfig: { model: "haiku" } },
+    });
+  });
+
+  it("resets every lane's adapter config when the adapter type changes", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: { enabled: true, adapterConfig: { model: "claude-haiku-4-5" } },
+        senior: { enabled: true, adapterConfig: { model: "claude-opus-4-8" } },
+        mid: { enabled: true, adapterConfig: { model: "claude-sonnet-4-6" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        modelProfiles: {
+          cheap: { resetAdapterConfig: true },
+          senior: { resetAdapterConfig: true },
+          mid: { resetAdapterConfig: true },
+          junior: { resetAdapterConfig: true },
+        },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toEqual({
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: { enabled: true, adapterConfig: {} },
+        senior: { enabled: true, adapterConfig: {} },
+        mid: { enabled: true, adapterConfig: {} },
+      },
+    });
+  });
+
+  // An adapter change must not become an escalation. Deleting the lane entries
+  // re-enabled every disabled work lane, because an absent entry reads as
+  // ENABLED at dispatch.
+  it("keeps a disabled work lane disabled when the adapter type changes", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: {
+        cheap: { enabled: false },
+        senior: { enabled: false, adapterConfig: { model: "claude-opus-4-8" } },
+        mid: { enabled: false, adapterConfig: { model: "claude-sonnet-4-6" } },
+        junior: { enabled: false, adapterConfig: { model: "claude-haiku-4-5" } },
+      },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterType: "codex_local",
+        modelProfiles: {
+          cheap: { resetAdapterConfig: true },
+          senior: { resetAdapterConfig: true },
+          mid: { resetAdapterConfig: true },
+          junior: { resetAdapterConfig: true },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      cheap: { enabled: false, adapterConfig: {} },
+      senior: { enabled: false, adapterConfig: {} },
+      mid: { enabled: false, adapterConfig: {} },
+      junior: { enabled: false, adapterConfig: {} },
+    });
+  });
+
+  // A lane an agent never had an entry for stays absent: manufacturing
+  // `{ enabled: true }` would turn a default into an explicit enable.
+  it("leaves an unset lane absent when the adapter type changes", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig = {
+      heartbeat: { enabled: true, intervalSec: 300 },
+      modelProfiles: { senior: { enabled: false } },
+    };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        adapterType: "codex_local",
+        modelProfiles: {
+          cheap: { resetAdapterConfig: true },
+          senior: { resetAdapterConfig: true },
+          mid: { resetAdapterConfig: true },
+          junior: { resetAdapterConfig: true },
+        },
+      }),
+    );
+
+    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      senior: { enabled: false, adapterConfig: {} },
     });
   });
 });

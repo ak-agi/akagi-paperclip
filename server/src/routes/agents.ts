@@ -12,11 +12,17 @@ import {
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
+  changedWorkModelProfileKeys,
   deriveAgentUrlKey,
+  isAgentTier,
   isUuidLike,
+  MODEL_PROFILE_KEYS,
+  mergeStoredModelProfiles,
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
+  seedDisabledWorkModelProfiles,
   testAdapterEnvironmentSchema,
+  writtenWorkModelProfileKeys,
   type AgentDesiredSkillEntry,
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
@@ -1840,17 +1846,35 @@ export function agentRoutes(
 
     const parsedModelProfiles = asRecord(normalizedRuntimeConfig.modelProfiles);
     const modelProfiles = parsedModelProfiles ? { ...parsedModelProfiles } : {};
-    if (!Object.prototype.hasOwnProperty.call(modelProfiles, "cheap")) {
+    const missingProfileKeys = MODEL_PROFILE_KEYS.filter(
+      (key) => !Object.prototype.hasOwnProperty.call(modelProfiles, key),
+    );
+    if (missingProfileKeys.length > 0) {
+      // An absent runtime entry reads as ENABLED downstream
+      // (`readAgentRuntimeModelProfile`), so a new agent with no entry runs
+      // whatever lane a requester asks for. Seed every lane the adapter
+      // advertises off. The three work lanes are seeded unconditionally by
+      // `seedDisabledWorkModelProfiles` below -- keying that seed off "this
+      // adapter advertises profiles today" was itself a hole: an adapter that
+      // advertised none at create time seeded nothing, so every agent created
+      // under it gained all three work lanes the moment the adapter later
+      // declared one.
       const adapterModelProfiles = await listNewAgentAdapterModelProfiles(adapterType);
-      if (adapterModelProfiles.some((profile) => profile.key === "cheap")) {
-        modelProfiles.cheap = { enabled: false };
+      const adapterProfileKeys = new Set(adapterModelProfiles.map((profile) => profile.key));
+      for (const key of missingProfileKeys) {
+        if (adapterProfileKeys.has(key)) {
+          modelProfiles[key] = { enabled: false };
+        }
       }
     }
     if (Object.keys(modelProfiles).length > 0) {
       normalizedRuntimeConfig.modelProfiles = modelProfiles;
     }
 
-    return normalizedRuntimeConfig;
+    // `agentSvc.create` seeds the work lanes too, so no create path can skip
+    // them. Seeding here as well keeps the value the route logs and returns
+    // identical to the value that lands in the row.
+    return seedDisabledWorkModelProfiles(normalizedRuntimeConfig);
   }
 
   function listRuntimeModelProfileAdapterConfigs(runtimeConfig: unknown): Array<{
@@ -1887,6 +1911,67 @@ export function agentRoutes(
     for (const entry of listRuntimeModelProfileAdapterConfigs(runtimeConfig)) {
       assertNoAgentAdapterConfigMutation(req, entry.adapterConfig, entry.path);
     }
+  }
+
+  function forbidWorkModelProfileChange(laneKeys: readonly string[]): never {
+    const paths = laneKeys.map((key) => `runtimeConfig.modelProfiles.${key}`);
+    throw forbidden(
+      `Agent-authenticated callers cannot change a model work lane (${paths.join(", ")}). `
+        + "A board operator owns work lane enablement and configuration.",
+      { code: "agent_work_model_profile_change_forbidden" },
+    );
+  }
+
+  // The work lanes are the operator's cost control. An agent-authenticated
+  // caller may already request a lane per issue, so letting the same caller
+  // enable a lane, or point it at a costlier model, would hand it the switch
+  // that is meant to bound it. `assertCanUpdateAgent` is a self-allow for an
+  // agent editing its own config, so nothing else stops this. The reserved
+  // `cheap` recovery lane keeps its existing path untouched.
+  //
+  // On CREATE there is no stored state to diff against, so naming a work lane
+  // at all is the mutation.
+  function assertNoAgentWorkModelProfileWrite(req: Request, runtimeConfig: unknown) {
+    if (req.actor.type !== "agent") return;
+    const written = writtenWorkModelProfileKeys(runtimeConfig);
+    if (written.length === 0) return;
+    forbidWorkModelProfileChange(written);
+  }
+
+  // On UPDATE the rule is a DIFF against stored state, not a scan of the
+  // payload. Scanning the payload was not enforceable: `PATCH` replaces
+  // `runtimeConfig` wholesale, and an absent lane entry reads as ENABLED at
+  // dispatch, so `{"runtimeConfig":{}}` -- a body that names no lane at all --
+  // deleted every stored switch and turned all three work lanes back on.
+  // Omission was the attack. Diffing the effective post-patch state also stops
+  // the guard from rejecting a faithful read-modify-write echo, which changes
+  // nothing.
+  function assertNoAgentWorkModelProfileChange(
+    req: Request,
+    storedRuntimeConfig: unknown,
+    nextRuntimeConfig: unknown,
+  ) {
+    if (req.actor.type !== "agent") return;
+    const changed = changedWorkModelProfileKeys(storedRuntimeConfig, nextRuntimeConfig);
+    if (changed.length === 0) return;
+    forbidWorkModelProfileChange(changed);
+  }
+
+  // The profile consent gate is PATCH-only: it keys on `agent:<id>:profile`,
+  // which does not exist before the agent does. `tier` is the one consent
+  // field that is optional at creation and that a later wave binds to a model
+  // lane, so an agent principal with `agents:create` must not be able to spawn
+  // a peer straight into an expensive tier. Creating the agent untiered stays
+  // allowed: `null` is the pre-existing behaviour, and the tier can then be
+  // set through the consent-gated PATCH path.
+  function assertNoAgentActorCreateTier(req: Request, tier: unknown) {
+    if (req.actor.type !== "agent") return;
+    if (tier === undefined || tier === null) return;
+    throw forbidden(
+      "Agent-authenticated callers cannot set an agent tier at creation time. Create the agent with no tier, "
+        + "then set the tier through PATCH /api/agents/:id, which requires recorded human consent.",
+      { code: "agent_create_tier_forbidden" },
+    );
   }
 
   async function normalizeMediatedAdapterConfigForPersistence(input: {
@@ -3427,7 +3512,38 @@ export function agentRoutes(
     const revisionId = req.params.revisionId as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
+
+    // A rollback is a full config write, not a lesser one: the service
+    // restores `runtimeConfig` AND `tier` wholesale from the snapshot. Gating
+    // it on `assertCanUpdateAgent` alone left the whole governance surface
+    // reachable by replay -- that check resolves to an unconditional self-allow
+    // for an agent editing its own config, so an agent could restore a
+    // pre-kill-switch revision and get its work lanes and a tier back with no
+    // board involvement. The rollback therefore clears the same two checks the
+    // PATCH path clears, against the state the restore would leave behind.
+    const revision = await svc.getConfigRevision(id, revisionId);
+    if (!revision) {
+      res.status(404).json({ error: "Revision not found" });
+      return;
+    }
+    const snapshot = asRecord(revision.afterConfig) ?? {};
+    const restoredRuntimeConfig = mergeStoredModelProfiles(
+      existing.runtimeConfig,
+      asRecord(snapshot.runtimeConfig) ?? {},
+    );
+    assertNoAgentWorkModelProfileChange(req, existing.runtimeConfig, restoredRuntimeConfig);
+
+    const existingRecord = existing as unknown as Record<string, unknown>;
+    const restoresProfileFields = AGENT_PROFILE_CHANGE_CONSENT_FIELDS.some((field) => {
+      const restored = field === "tier"
+        ? (isAgentTier(snapshot.tier) ? snapshot.tier : null)
+        : (snapshot[field] ?? null);
+      return restored !== (existingRecord[field] ?? null);
+    });
     await assertCanUpdateAgent(req, existing);
+    if (restoresProfileFields) {
+      await assertCanApplyAgentProfileChange(req, existing);
+    }
 
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
@@ -3534,6 +3650,8 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    assertNoAgentWorkModelProfileWrite(req, hireInput.runtimeConfig);
+    assertNoAgentActorCreateTier(req, hireInput.tier);
     const hiredAgentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -3753,6 +3871,8 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    assertNoAgentWorkModelProfileWrite(req, createInput.runtimeConfig);
+    assertNoAgentActorCreateTier(req, createInput.tier);
     const agentId = randomUUID();
     const requestedAdapterConfig = applyCodexLocalKeyIsolation(
       companyId,
@@ -4196,6 +4316,17 @@ export function agentRoutes(
         return;
       }
       assertNoAgentRuntimeConfigAdapterConfigMutation(req, runtimeConfig);
+      // Judge the state the patch would actually LEAVE BEHIND, not the keys the
+      // body happens to carry. `runtimeConfig` is replaced wholesale and an
+      // absent lane entry reads as ENABLED, so a body naming no lane at all
+      // used to delete every stored switch. The reconciled value carries an
+      // omitted lane forward, so the guard sees no change for a patch that
+      // touches something else -- and sees a real change when one is made.
+      assertNoAgentWorkModelProfileChange(
+        req,
+        existing.runtimeConfig,
+        mergeStoredModelProfiles(existing.runtimeConfig, runtimeConfig),
+      );
       requestedRuntimeConfig = runtimeConfig;
     }
     const touchesAdapterConfiguration =
@@ -4254,11 +4385,17 @@ export function agentRoutes(
     }
     if (requestedRuntimeConfig) {
       const baseAdapterConfig = asRecord(patchData.adapterConfig) ?? asRecord(existing.adapterConfig) ?? {};
-      patchData.runtimeConfig = await normalizeRuntimeConfigAdapterConfigsForPersistence(
-        existing.companyId,
-        requestedAdapterType,
-        requestedRuntimeConfig,
-        baseAdapterConfig,
+      // Merge AFTER normalization, so only the lanes the request actually named
+      // are re-normalized and re-constraint-checked. A lane carried forward from
+      // storage was normalized when it was written and is passed through as-is.
+      patchData.runtimeConfig = mergeStoredModelProfiles(
+        existing.runtimeConfig,
+        await normalizeRuntimeConfigAdapterConfigsForPersistence(
+          existing.companyId,
+          requestedAdapterType,
+          requestedRuntimeConfig,
+          baseAdapterConfig,
+        ),
       );
     }
     if (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId")) {
