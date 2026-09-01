@@ -104,6 +104,8 @@ import {
   issueWriteDenialResponse,
   type IssueWriteDenialCode,
   type IssueWriteDenialContext,
+  MODEL_PROFILE_KEYS,
+  type ModelProfileKey,
 } from "@paperclipai/shared";
 import { trackAgentTaskCompleted } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
@@ -150,6 +152,7 @@ import {
   isReviewPathRecoveryIdempotencyConflict,
   REVIEW_PATH_RECOVERY_INSTRUCTION,
 } from "../services/recovery/review-path-recovery.js";
+import { isStatusOnlyRecoveryGuardContext } from "../services/recovery/model-profile-hint.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -4853,22 +4856,22 @@ export function issueRoutes(
     return { scope, discovery, sourceIssue, watchdogIssue };
   }
 
-  function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
-    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
-    const context = contextSnapshot as Record<string, unknown>;
-    return context.modelProfile === "cheap" &&
-      context.recoveryIntent === "status_only" &&
-      context.allowDeliverableWork === false &&
-      context.allowDocumentUpdates === false &&
-      context.resumeRequiresNormalModel === true;
-  }
+  // §9.3 status-only recovery guard. Keyed off `recoveryIntent` + the three
+  // guard flags, never off `context.modelProfile`: dispatch rewrites
+  // `context.modelProfile` to whichever lane wins model-profile resolution and
+  // persists it back to the run's context snapshot, so keying off the lane key
+  // lets an unrelated per-issue `assigneeAdapterOverrides.modelProfile` silently
+  // switch this guard off. Shared with `routes/approvals.ts` through
+  // `services/recovery/model-profile-hint.ts` so there is exactly one definition.
+  const isStatusOnlyCheapRecoveryContext = isStatusOnlyRecoveryGuardContext;
 
-  function requestsCheapIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }) {
+  function requestsIssueAssigneeModelProfile(input: { assigneeAdapterOverrides?: unknown }): ModelProfileKey | null {
     const overrides = input.assigneeAdapterOverrides;
-    return !!overrides &&
-      typeof overrides === "object" &&
-      !Array.isArray(overrides) &&
-      (overrides as Record<string, unknown>).modelProfile === "cheap";
+    if (!overrides || typeof overrides !== "object" || Array.isArray(overrides)) return null;
+    const modelProfile = (overrides as Record<string, unknown>).modelProfile;
+    return MODEL_PROFILE_KEYS.includes(modelProfile as ModelProfileKey)
+      ? (modelProfile as ModelProfileKey)
+      : null;
   }
 
   async function loadActorRunContext(req: Request, companyId: string) {
@@ -4942,16 +4945,23 @@ export function issueRoutes(
     issue: { id?: string; companyId: string },
     input: { assigneeAdapterOverrides?: unknown },
   ) {
-    if (!requestsCheapIssueAssigneeModelProfile(input)) return true;
+    // A status-only recovery run may not pin a downstream issue to ANY model
+    // profile lane. Before the work lanes existed `cheap` was the only key this
+    // could be, so "requests cheap" and "requests a lane" were the same check;
+    // with senior/mid/junior in the enum they are not, and the narrow check
+    // would have let a status-only recovery pin downstream work to the priciest
+    // lane with no approval gate.
+    const requestedModelProfile = requestsIssueAssigneeModelProfile(input);
+    if (!requestedModelProfile) return true;
     const run = await loadActorRunContext(req, issue.companyId);
     if (!run || !isStatusOnlyCheapRecoveryContext(run.contextSnapshot)) return true;
 
     res.status(403).json({
-      error: "Cheap status-only recovery runs cannot assign downstream issue work to the cheap model profile",
+      error: "Cheap status-only recovery runs cannot assign downstream issue work to a model profile lane",
       details: {
         issueId: issue.id ?? null,
         runId: run.id,
-        modelProfile: "cheap",
+        modelProfile: requestedModelProfile,
         recoveryIntent: "status_only",
         resumeRequiresNormalModel: true,
       },

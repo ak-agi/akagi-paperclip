@@ -3,6 +3,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
+import { withRecoveryModelProfileHint } from "../services/recovery/model-profile-hint.js";
 
 const issueId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -1256,11 +1257,75 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await sendRequest(app);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toContain("cannot assign downstream issue work to the cheap model profile");
+    expect(res.body.error).toContain("cannot assign downstream issue work to a model profile lane");
     expect(mockIssueService.create).not.toHaveBeenCalled();
     expect(mockIssueService.createChild).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
+
+  // Widening MODEL_PROFILE_KEYS added work lanes that a status-only recovery run
+  // must not be able to pin either — otherwise a recovery wake could route
+  // downstream work onto the priciest lane with no approval gate.
+  it.each(["senior", "mid", "junior"] as const)(
+    "blocks cheap status-only recovery runs from pinning downstream work to the %s work lane",
+    async (lane) => {
+      const app = await createApp(
+        ownerActor(),
+        createRunContextDb({
+          modelProfile: "cheap",
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        }),
+      );
+
+      const res = await request(app).patch(`/api/issues/${issueId}`).send({
+        assigneeAdapterOverrides: { modelProfile: lane },
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toContain("cannot assign downstream issue work to a model profile lane");
+      expect(res.body.details?.modelProfile).toBe(lane);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
+
+  // Regression for the §9.3 recovery-guard bypass: the run context is a real
+  // status-only recovery wake, but the issue carries a work-lane override.
+  // Dispatch resolves the issue override ahead of the wake context and rewrites
+  // `context.modelProfile` to the winning lane before persisting the context
+  // snapshot, so a guard keyed off `context.modelProfile === "cheap"` stops
+  // firing. The guard must key off `recoveryIntent` + the guard flags instead.
+  it.each(["senior", "mid", "junior"] as const)(
+    "still blocks deliverable mutations when dispatch rewrote the recovery context lane to %s",
+    async (lane) => {
+      const app = await createApp(
+        ownerActor(),
+        createRunContextDb({
+          ...withRecoveryModelProfileHint({ issueId }, "status_only"),
+          // What dispatch persists after an issue-level work-lane override wins
+          // model-profile resolution for a status-only recovery wake.
+          modelProfile: lane,
+        }),
+      );
+
+      const deliverable = await request(app).post(`/api/issues/${issueId}/work-products`).send({
+        type: "artifact",
+        provider: "test",
+        title: "Recovery run should not be able to create this",
+      });
+      expect(deliverable.status, JSON.stringify(deliverable.body)).toBe(403);
+      expect(deliverable.body.error).toContain("Cheap status-only recovery runs cannot update issue documents");
+      expect(mockWorkProductService.createForIssue).not.toHaveBeenCalled();
+
+      const approval = await request(app).post(`/api/issues/${issueId}/approvals`).send({
+        approvalId: "88888888-8888-4888-8888-888888888888",
+      });
+      expect(approval.status, JSON.stringify(approval.body)).toBe(403);
+      expect(approval.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    },
+  );
 
   it("defaults agent-created root follow-up issues to inherit the current run workspace", async () => {
     const app = await createApp(

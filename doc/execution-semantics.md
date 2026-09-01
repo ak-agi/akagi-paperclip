@@ -584,7 +584,14 @@ Automatic retries that can continue source work must use the original/normal mod
 - `cheap` is the **recovery lane**. Everything in this section applies to it and to it alone. It is status-only, it carries the `allowDeliverableWork: false` / `allowDocumentUpdates: false` / `resumeRequiresNormalModel: true` guards, and it must never produce deliverable work.
 - `senior`, `mid`, and `junior` are **work lanes**. They are ordinary capability and cost tiers. They **do** permit deliverable work: repo file changes, issue documents, plans, work products, and attachments. They carry none of the recovery guards, and a run on a work lane is a normal-model run for the purpose of the rules above.
 
-The recovery lane is not reachable from a work lane and a work lane is not reachable from the recovery lane. A cheap status-only recovery that finds real work remaining still hands back to a normal worker run; that worker run may sit on any work lane, but it is never `cheap`.
+Two rules keep the kinds apart, and both are enforced in code rather than only asserted here:
+
+1. **A status-only recovery wake keeps its own lane.** `resolveModelProfileApplication()` gives the wake context precedence over the per-issue `assigneeAdapterOverrides.modelProfile` whenever the context carries the status-only guards. Without this, waking a recovery run against an issue that happens to carry `modelProfile: "senior"` would run status-only coordination on the priciest lane.
+2. **The write-path guards key off the guard flags, never off the lane key.** Dispatch overwrites `contextSnapshot.modelProfile` with whichever lane won resolution and persists that snapshot, so `modelProfile` is not a durable signal of intent. `isStatusOnlyRecoveryGuardContext()` therefore tests `recoveryIntent` plus `allowDeliverableWork` / `allowDocumentUpdates` / `resumeRequiresNormalModel`, and every deliverable-write and approval guard goes through it.
+
+A cheap status-only recovery that finds real work remaining still hands back to a normal worker run; that worker run may sit on any work lane, but it is never a status-only run.
+
+A status-only recovery run also may not pin a downstream issue to any lane — the issue create/child/update routes reject `assigneeAdapterOverrides.modelProfile` from such a run for every lane, not just `cheap`.
 
 Selecting a work lane on an adapter that does not declare it is not an error. Lane resolution records `fallbackReason: "adapter_profile_not_supported"` and the run proceeds on the agent's primary model.
 

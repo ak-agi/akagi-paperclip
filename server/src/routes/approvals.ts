@@ -23,6 +23,7 @@ import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
+import { isStatusOnlyRecoveryGuardContext } from "../services/recovery/model-profile-hint.js";
 
 function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(approval: T): T {
   return {
@@ -31,15 +32,10 @@ function redactApprovalPayload<T extends { payload: Record<string, unknown> }>(a
   };
 }
 
-function isStatusOnlyCheapRecoveryContext(contextSnapshot: unknown) {
-  if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return false;
-  const context = contextSnapshot as Record<string, unknown>;
-  return context.modelProfile === "cheap" &&
-    context.recoveryIntent === "status_only" &&
-    context.allowDeliverableWork === false &&
-    context.allowDocumentUpdates === false &&
-    context.resumeRequiresNormalModel === true;
-}
+// §9.3 status-only recovery guard — see `isStatusOnlyRecoveryGuardContext` for
+// why it keys off `recoveryIntent` and the guard flags rather than off
+// `context.modelProfile`, which dispatch rewrites.
+const isStatusOnlyCheapRecoveryContext = isStatusOnlyRecoveryGuardContext;
 
 export function approvalRoutes(
   db: Db,

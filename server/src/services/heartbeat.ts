@@ -251,6 +251,7 @@ import {
   buildWorkspaceValidationRecoveryNoticeSeed,
 } from "./recovery/stranded-notice.js";
 import {
+  isStatusOnlyRecoveryGuardContext,
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
@@ -3855,12 +3856,24 @@ export function resolveModelProfileApplication(input: {
 }): ModelProfileApplication {
   const issueModelProfile = input.issueModelProfile ?? null;
   const contextModelProfile = readContextModelProfile(input.contextSnapshot);
-  const requested = issueModelProfile ?? contextModelProfile;
-  const requestedBy: ModelProfileRequestSource | null = issueModelProfile
-    ? "issue_override"
-    : contextModelProfile
-      ? "wake_context"
-      : null;
+  // A status-only recovery wake pins its own lane. The per-issue override must
+  // not lift a status-only recovery run onto a work lane: the wake still
+  // carries `allowDeliverableWork: false`, so honouring the override would run
+  // status-only coordination on an expensive work lane and (before the guards
+  // were re-keyed off `recoveryIntent`) overwrite the persisted context lane
+  // that the §9.3 guards used to read. See `doc/execution-semantics.md` §9.3.
+  const recoveryPinnedModelProfile = contextModelProfile
+    && isStatusOnlyRecoveryGuardContext(input.contextSnapshot)
+    ? contextModelProfile
+    : null;
+  const requested = recoveryPinnedModelProfile ?? issueModelProfile ?? contextModelProfile;
+  const requestedBy: ModelProfileRequestSource | null = recoveryPinnedModelProfile
+    ? "wake_context"
+    : issueModelProfile
+      ? "issue_override"
+      : contextModelProfile
+        ? "wake_context"
+        : null;
 
   if (!requested) {
     return {
