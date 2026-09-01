@@ -55,17 +55,25 @@ test("promotion selection guards against sources that predate their channel tool
   assert.match(releaseWorkflow, /git show "\$\{sha\}:scripts\/release\.sh" \| grep -qF 'canary\|nightly\|beta\|stable\)'/);
 });
 
-test("candidate-branch betas are validated and fully verified before publish", () => {
+test("candidate-branch betas keep their verification wiring (disabled on this fork)", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
-  // Candidate heads are new commits: selection must pin the naming
-  // convention and publication must be gated on full verification.
+  // Fork context (#4, commit a59ef884): every release job is gated `if: false`
+  // here, so the upstream `if:` expressions this test was written against no
+  // longer appear. Assert the disabled-but-preserved shape instead — the same
+  // convention the canary/stable test above uses: the gate stays off while the
+  // naming convention, the `needs:` chain and the delegation to
+  // release-verify.yml remain intact, so re-enabling is an `if:` flip.
   assert.match(releaseWorkflow, /candidate\/beta-\*\)/);
   assert.match(
     releaseWorkflow,
-    /verify_beta_candidate:\n\s+needs: select_beta\n\s+if: needs\.select_beta\.outputs\.mode == 'candidate'\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml/,
+    /verify_beta_candidate:\n\s+needs: select_beta\n\s+if: false\n\s+uses: \.\/\.github\/workflows\/release-verify\.yml/,
   );
-  assert.match(releaseWorkflow, /needs\.verify_beta_candidate\.result == 'success'/);
+  // Upstream gates publish_beta on `needs.verify_beta_candidate.result ==
+  // 'success'`. That expression lives inside publish_beta's `if:`, which the
+  // fork replaced with `if: false`, so assert the `needs:` edge that carries
+  // the ordering guarantee and must be restored alongside it.
+  assert.match(releaseWorkflow, /publish_beta:\n\s+needs: \[select_beta, verify_beta_candidate\]/);
 });
 
 test("post-publish beta smoke survives the skipped candidate-verification ancestor", () => {
@@ -75,10 +83,11 @@ test("post-publish beta smoke survives the skipped candidate-verification ancest
   // skipped on promote-mode betas. An `if:` without a status-check function
   // gets an implicit success() that evaluates that chain transitively and
   // silently skips the smoke. The condition must stay explicit.
-  assert.match(
-    releaseWorkflow,
-    /smoke_beta:\n\s+needs: publish_beta\n\s+if: \$\{\{ !cancelled\(\) && needs\.publish_beta\.result == 'success' && !inputs\.dry_run \}\}/,
-  );
+  // Disabled on this fork (`if: false`), so the explicit status-check form is
+  // not present to assert. Pin the wiring that must survive, and keep the
+  // reasoning above so the explicit condition is restored — not an implicit
+  // success() — whenever the beta lane is switched back on.
+  assert.match(releaseWorkflow, /smoke_beta:\n\s+needs: publish_beta\n\s+if: false/);
 });
 
 test("every lane's tag push degrades to recovery instructions when rejected", () => {
