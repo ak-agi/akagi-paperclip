@@ -112,6 +112,10 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import {
+  buildAgentDelegationContext,
+  renderDelegationContextMarkdown,
+} from "./delegation-context.js";
 import { secretService, type MissingRuntimeBinding } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -6507,6 +6511,12 @@ export function buildPaperclipTaskMarkdown(input: {
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
+  // Pre-rendered delegation block derived from the live org chart. It is
+  // appended after the user-authored task data so the trusted, generated
+  // guidance is the last thing the model reads. It is carried on both the full
+  // and the compact variant on purpose: it is the only live org signal in the
+  // prompt, so a reorg must reach a resumed session too.
+  delegationContext?: string | null;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -6595,6 +6605,8 @@ export function buildPaperclipTaskMarkdown(input: {
     lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
   }
   lines.push("", "Use this task context as the current assignment.");
+  const delegationContext = input.delegationContext?.trim();
+  if (delegationContext) lines.push("", delegationContext);
   return lines.join("\n");
 }
 
@@ -14841,7 +14853,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
+    // Derived delegation guidance. It replaces the hardcoded routing prose that
+    // used to live in the built-in CEO instruction bundle, so it is rebuilt on
+    // every wake and always matches the current org chart. The extra reads only
+    // happen when the agent has an eligible report or an eligible manager.
+    const delegationContextMarkdown = issueRef || safeWakeCommentContext
+      ? renderDelegationContextMarkdown(
+          await buildAgentDelegationContext(db, {
+            agent: {
+              id: agent.id,
+              companyId: agent.companyId,
+              name: agent.name,
+              role: agent.role,
+              tier: agent.tier,
+              reportsTo: agent.reportsTo,
+            },
+          }),
+        )
+      : null;
     const taskMarkdownInput = {
+      delegationContext: delegationContextMarkdown,
       issue: issueRef
         ? {
             id: issueRef.id,

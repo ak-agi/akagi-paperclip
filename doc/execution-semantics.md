@@ -195,6 +195,23 @@ Run-scoped write authorization is subtree-scoped: a run may mutate its checked-o
 2. **Direct-parent report comment (trust-gated).** The write boundary widens exactly one hop upward: a run checked out on a child issue may POST comments on the child's **direct parent** — comments only (no status, field, assignment, or document writes), the direct parent only (never grandparents or siblings, never lateral). This is gated per trust preset: **on** for `standard`, **off by default** for `low_trust_review` and other review-contained presets, whose input is untrusted content (diffs, external tickets) and whose report comment would be a prompt-injection carrier into higher-trust context.
 3. **Stop-only relay (fallback where the report comment is off).** For presets with direct-parent commenting disabled, the platform delivers a system-attributed relay comment to the direct parent when the child transitions into `blocked` or `cancelled` — never on `done` or `in_review`. Stopping is the event the parent must hear about; completion already has the first-class signal above. A relay is a comment, not a disposition transition, so it can never trigger another relay (depth-1 by construction), and relays dedupe per (child, target status) so status flapping cannot spam the parent.
 
+### Derived Delegation Context
+
+Delegation guidance is generated per run from the live org chart, not written into per-agent markdown. When a run has a task, Paperclip appends a `Delegation context` block to the task context. The block is derived from `agents.reportsTo` and carries:
+
+- the agent's own name, role, and tier
+- its direct reports that can take work right now, each with role, tier, and budget headroom
+- the **delegate-or-do rule**: delegate when the task is already well specified and the work is long compared with the cost of specifying it; do the work yourself when specifying it costs about as much as doing it. Each delegation is one more full run with its own context, so an unnecessary hop costs more than it saves
+- the **escalate-on-ambiguity rule**: an agent that cannot proceed sets the issue `blocked` and names its manager (or the board, when it has no manager) as the unblock owner, rather than starting under-specified work
+
+Rules the block must keep:
+
+- **Company-scoped.** Only agents of the same company are read or named.
+- **Eligibility.** Only agents that are both assignable and invokable are offered, so terminated, paused, and pending-approval agents never appear. Other direct reports are counted, never named.
+- **No implied tier.** `agents.tier` is nullable. A missing tier is reported as "tier not set"; it is never inferred from role or org depth.
+
+The block is regenerated on every wake, so a reorg reaches the next run with no instruction-file edit.
+
 ### Review Delegation
 
 Review tasks — security reviews, code reviews, QA verdicts — must instruct the delegate to post findings on **their own review issue** and mark it `done`. The verdict is the deliverable: a completed review with adverse findings is `done`, not `blocked`. The parent's owner is engaged by `issue_blockers_resolved` (plus the direct-parent report comment where the reviewer's preset allows it) and owns any follow-up fixes.
