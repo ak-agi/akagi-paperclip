@@ -5,6 +5,7 @@ import type {
   IssueCommentPresentation,
   SourceTrustMetadata,
 } from "@paperclipai/shared";
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, timestamp, index, jsonb } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
@@ -57,5 +58,13 @@ export const issueComments = pgTable(
       table.createdAt,
     ),
     bodySearchIdx: index("issue_comments_body_search_idx").using("gin", table.body.op("gin_trgm_ops")),
+    // run -> comment lookups for the orchestration cost read model. Without
+    // these the classifier sequentially scans every comment in the company.
+    companyCreatedByRunIdx: index("issue_comments_company_created_by_run_idx")
+      .on(table.companyId, table.createdByRunId)
+      .where(sql`${table.createdByRunId} is not null`),
+    companyDerivedCreatedByRunIdx: index("issue_comments_company_derived_created_by_run_idx")
+      .on(table.companyId, table.derivedCreatedByRunId)
+      .where(sql`${table.derivedCreatedByRunId} is not null`),
   }),
 );

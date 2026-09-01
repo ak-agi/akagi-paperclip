@@ -1,4 +1,11 @@
-import type { BillingType, CostStatus, ORCHESTRATION_RUN_CLASSES } from "../constants.js";
+import type {
+  BillingType,
+  CostStatus,
+  ORCHESTRATION_COST_BASES,
+  ORCHESTRATION_COST_EXCLUSION_REASONS,
+  ORCHESTRATION_OVERHEAD_VERDICTS,
+  ORCHESTRATION_RUN_CLASSES,
+} from "../constants.js";
 
 export interface CostEvent {
   id: string;
@@ -139,6 +146,20 @@ export interface CostByProject {
 export type OrchestrationRunClass = (typeof ORCHESTRATION_RUN_CLASSES)[number];
 
 /**
+ * Which unit a group's orchestration-vs-execution comparison is read on. Ships
+ * on the wire so a consumer can never confuse a cents verdict with a tokens
+ * verdict, and never renders a verdict for a group that has neither.
+ */
+export type OrchestrationCostBasis = (typeof ORCHESTRATION_COST_BASES)[number];
+
+/** verdict on the orchestration-vs-execution invariant for one issue tree */
+export type OrchestrationOverheadVerdict = (typeof ORCHESTRATION_OVERHEAD_VERDICTS)[number];
+
+/** why a cost event in range never reached an issue tree */
+export type OrchestrationCostExclusionReason =
+  (typeof ORCHESTRATION_COST_EXCLUSION_REASONS)[number];
+
+/**
  * Measures shared by every grain of the orchestration cost report.
  *
  * `*Cents` values come from priced, metered rows only: `costStatus: "unpriced"`
@@ -146,6 +167,11 @@ export type OrchestrationRunClass = (typeof ORCHESTRATION_RUN_CLASSES)[number];
  * neither carries a marginal dollar cost that can be compared. `*Tokens` values
  * include every row, so subscription-billed agents still produce a usable
  * quota-shaped ratio.
+ *
+ * Because those two exclusions zero out a row's cents while keeping its tokens,
+ * a group that mixes priced and held-out rows has no single unit that covers all
+ * of its work. `basis` says which unit — if any — the group can be judged on;
+ * never compare `*Cents` against `*Tokens`, and never read a ratio without it.
  */
 export interface OrchestrationCostMeasures {
   orchestrationRunCount: number;
@@ -159,14 +185,21 @@ export interface OrchestrationCostMeasures {
   executionTokens: number;
   unclassifiedTokens: number;
   totalTokens: number;
-  /** `orchestrationCents / totalCents`, rounded to 4 dp; null when totalCents is 0 */
+  /**
+   * `orchestrationCents / (orchestrationCents + executionCents)`, rounded to
+   * 4 dp; null when nothing is classified. The denominator deliberately excludes
+   * unclassified spend so that this ratio and the inversion verdict can never
+   * disagree: the tree is inverted exactly when this exceeds 0.5.
+   */
   orchestrationCostRatio: number | null;
-  /** `orchestrationTokens / totalTokens`, rounded to 4 dp; null when totalTokens is 0 */
+  /** `orchestrationTokens / (orchestrationTokens + executionTokens)`, same rule */
   orchestrationTokenRatio: number | null;
   /** cost rows dropped from the cent sums because they are unpriced */
   unpricedEventCount: number;
   /** cost rows dropped from the cent sums because the agent is subscription-billed */
   subscriptionEventCount: number;
+  /** unit this group can be compared on; `indeterminate` means it cannot be */
+  basis: OrchestrationCostBasis;
 }
 
 /** one root issue tree, aggregated over every descendant issue that carried cost */
@@ -178,12 +211,15 @@ export interface OrchestrationCostTree extends OrchestrationCostMeasures {
   issueCount: number;
   /** deepest `issues.requestDepth` seen inside the tree */
   maxRequestDepth: number;
+  /** the tree's root, or an issue in it that carried cost, is not done or cancelled */
+  inFlight: boolean;
   /**
-   * true when orchestration outweighs execution on the basis that has data —
-   * cents when priced metered rows exist, otherwise tokens. This is the
-   * invariant breach described in the agent-tiers plan §9.
+   * Verdict on the invariant from the agent-tiers plan §9. Only `inverted`
+   * means "orchestration cost exceeds execution cost"; the other values say why
+   * no verdict was issued, so a caller never has to guess whether a `false`
+   * meant "healthy" or "unknowable".
    */
-  overheadInverted: boolean;
+  overheadVerdict: OrchestrationOverheadVerdict;
 }
 
 /** cost split by delegation depth, taken straight from `issues.requestDepth` */
@@ -192,13 +228,62 @@ export interface OrchestrationCostDepth extends OrchestrationCostMeasures {
   issueCount: number;
 }
 
+/**
+ * Full accounting for every company cost event in range, so the difference
+ * between this report and the Overview total is always explainable.
+ *
+ * `totalEventCount` and `totalCostCents` cover every cost event for the company
+ * in range with no visibility filter at all, which is exactly what
+ * `GET /costs/summary` reports. The four exclusion reasons are mutually
+ * exclusive and, with the counted rows, sum back to those totals.
+ */
+export interface OrchestrationCostExclusions {
+  /** every company cost event in range, before any exclusion */
+  totalEventCount: number;
+  /** raw `costCents` over those events — matches the Overview spend total */
+  totalCostCents: number;
+  /** events that reached a tree and are aggregated into the measures above */
+  countedEventCount: number;
+  /** raw `costCents` over counted events */
+  countedCostCents: number;
+  /**
+   * raw `costCents` of counted events that were nevertheless held out of every
+   * cent sum because they are unpriced or subscription-billed. This is the rest
+   * of the gap between `countedCostCents` and `summary.totalCents`.
+   */
+  heldOutCostCents: number;
+  /** dropped: the event carries no `issueId`, so it belongs to no tree */
+  noIssueEventCount: number;
+  noIssueCostCents: number;
+  /** dropped: the event has an issue but no `heartbeatRunId`, so no run to classify */
+  noRunEventCount: number;
+  noRunCostCents: number;
+  /**
+   * dropped: the issue row is missing, belongs to another company, or its parent
+   * chain never terminated within the ancestor walk cap
+   */
+  unresolvedIssueEventCount: number;
+  unresolvedIssueCostCents: number;
+  /**
+   * dropped: the issue or one of its ancestors is hidden or harness-scoped.
+   * Status cards and summary slots create hidden, agent-executed, cost-bearing
+   * issues by design, so this is routinely non-zero.
+   */
+  hiddenTreeEventCount: number;
+  hiddenTreeCostCents: number;
+}
+
 export interface OrchestrationCostSummary extends OrchestrationCostMeasures {
   companyId: string;
   issueCount: number;
-  /** trees whose orchestration cost exceeds their execution cost */
+  /** root trees with attributed spend in range, before the response cap */
+  treeCount: number;
+  /** trees that had an honest basis, cleared the spend floor, and had settled */
+  judgedTreeCount: number;
+  /** judged trees whose orchestration cost exceeds their execution cost */
   invertedTreeCount: number;
-  /** cost events in range that carry no issue attribution and are therefore unranked */
-  unattributedEventCount: number;
+  /** full drop accounting for the range; nothing leaves the report silently */
+  exclusions: OrchestrationCostExclusions;
 }
 
 export interface OrchestrationCostReport {
@@ -207,4 +292,9 @@ export interface OrchestrationCostReport {
   trees: OrchestrationCostTree[];
   /** ascending by `requestDepth` */
   byDepth: OrchestrationCostDepth[];
+  /** spend floors below which a tree is reported `below_floor` rather than judged */
+  thresholds: {
+    minClassifiedCents: number;
+    minClassifiedTokens: number;
+  };
 }

@@ -88,11 +88,17 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
     return { companyId, agentId };
   }
 
+  /**
+   * Issues default to `done` so the common case exercises the verdict path.
+   * The in-flight gate is exercised by passing a live status explicitly.
+   */
   async function seedIssue(input: {
     companyId: string;
     parentId?: string | null;
     requestDepth: number;
     title: string;
+    status?: string;
+    hidden?: boolean;
   }) {
     const id = randomUUID();
     identifierSeq += 1;
@@ -101,11 +107,12 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
       companyId: input.companyId,
       parentId: input.parentId ?? null,
       title: input.title,
-      status: "in_progress",
+      status: input.status ?? "done",
       priority: "medium",
       requestDepth: input.requestDepth,
       issueNumber: identifierSeq,
       identifier: `ORC-${identifierSeq}`,
+      hiddenAt: input.hidden ? new Date("2026-07-01T00:00:00.000Z") : null,
     });
     return id;
   }
@@ -225,11 +232,20 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
     expect(report.summary.executionCents).toBe(300);
     expect(report.summary.unclassifiedCents).toBe(100);
     expect(report.summary.totalCents).toBe(1100);
-    expect(report.summary.orchestrationCostRatio).toBeCloseTo(0.6364, 4);
+    // share of classified spend (700 of 1000), not of the 1100 total: the ratio
+    // and the inversion verdict must share a denominator
+    expect(report.summary.orchestrationCostRatio).toBeCloseTo(0.7, 4);
+    expect(report.summary.basis).toBe("cents");
     expect(report.summary.orchestrationRunCount).toBe(1);
     expect(report.summary.executionRunCount).toBe(1);
     expect(report.summary.unclassifiedRunCount).toBe(1);
     expect(report.summary.invertedTreeCount).toBe(1);
+    expect(report.summary.judgedTreeCount).toBe(1);
+    expect(report.summary.treeCount).toBe(1);
+    expect(report.summary.exclusions.totalEventCount).toBe(3);
+    expect(report.summary.exclusions.countedEventCount).toBe(3);
+    expect(report.summary.exclusions.totalCostCents).toBe(1100);
+    expect(report.summary.exclusions.heldOutCostCents).toBe(0);
 
     expect(report.trees).toHaveLength(1);
     const [tree] = report.trees;
@@ -240,7 +256,8 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
     expect(tree.orchestrationCents).toBe(700);
     expect(tree.executionCents).toBe(300);
     // orchestration outweighs execution — the plan §9 invariant breach
-    expect(tree.overheadInverted).toBe(true);
+    expect(tree.overheadVerdict).toBe("inverted");
+    expect(tree.inFlight).toBe(false);
 
     expect(report.summary.issueCount).toBe(3);
     expect(report.byDepth.map((row) => row.requestDepth)).toEqual([0, 1, 2]);
@@ -276,7 +293,7 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
 
     expect(report.summary.executionCents).toBe(250);
     expect(report.summary.orchestrationCents).toBe(0);
-    expect(report.trees[0].overheadInverted).toBe(false);
+    expect(report.trees[0].overheadVerdict).toBe("balanced");
   });
 
   it("counts a comment-only run as orchestration", async () => {
@@ -347,7 +364,10 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
     // tokens still include the unpriced row, because quota is still consumed
     expect(report.summary.orchestrationTokens).toBe(1000);
     expect(report.summary.executionTokens).toBe(300);
-    expect(report.trees[0].overheadInverted).toBe(false);
+    // an unpriced row alongside priced ones means the cent sums no longer cover
+    // all of the work, so no verdict is issued on them
+    expect(report.summary.basis).toBe("indeterminate");
+    expect(report.trees[0].overheadVerdict).toBe("indeterminate");
   });
 
   it("holds subscription-billed rows out of cost sums and reads them on tokens instead", async () => {
@@ -366,7 +386,7 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
       issueId: rootId,
       runId: orchestrationRun,
       costCents: 5_000,
-      inputTokens: 800,
+      inputTokens: 8_000_000,
       billingType: "subscription_included",
     });
     await seedCostEvent({
@@ -375,7 +395,7 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
       issueId: childId,
       runId: executionRun,
       costCents: 5_000,
-      inputTokens: 200,
+      inputTokens: 2_000_000,
       billingType: "subscription_included",
     });
 
@@ -385,8 +405,186 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
     expect(report.summary.orchestrationCostRatio).toBeNull();
     expect(report.summary.subscriptionEventCount).toBe(2);
     expect(report.summary.orchestrationTokenRatio).toBeCloseTo(0.8, 4);
-    // with no priced spend, the inversion verdict falls back to tokens
-    expect(report.trees[0].overheadInverted).toBe(true);
+    expect(report.summary.basis).toBe("tokens");
+    // with no priced spend anywhere, tokens are the only unit and every row
+    // contributes to them, so the comparison is still honest
+    expect(report.trees[0].overheadVerdict).toBe("inverted");
+  });
+
+  // Regression for the headline defect: a metered manager over a
+  // subscription-billed executor. The cent sums value every subscription row at
+  // zero, so the old rule saw 300c of orchestration against 0c of execution and
+  // reported orchestrationCostRatio 1 with the destructive "orchestration-heavy"
+  // badge, on a tree that is ~98% execution by tokens. Neither unit covers both
+  // sides, so the tree must not be judged at all.
+  it("issues no verdict when metered and subscription billing are mixed in one tree", async () => {
+    const { companyId, agentId } = await seedCompany("ORCM");
+    const rootId = await seedIssue({ companyId, requestDepth: 0, title: "Mixed root" });
+    const childId = await seedIssue({
+      companyId,
+      parentId: rootId,
+      requestDepth: 1,
+      title: "Delegated build",
+    });
+
+    const managerRun = await seedRun(companyId, agentId);
+    const executorRun = await seedRun(companyId, agentId);
+    await markOrchestrationRun(companyId, rootId, managerRun);
+    await markExecutionRun(companyId, childId, executorRun);
+
+    // metered manager: real dollars, modest tokens
+    await seedCostEvent({
+      companyId,
+      agentId,
+      issueId: rootId,
+      runId: managerRun,
+      costCents: 300,
+      inputTokens: 100_000,
+    });
+    // subscription executor: no marginal dollars, most of the actual work
+    await seedCostEvent({
+      companyId,
+      agentId,
+      issueId: childId,
+      runId: executorRun,
+      costCents: 0,
+      inputTokens: 5_000_000,
+      billingType: "subscription_included",
+    });
+
+    const report = await service.report(companyId);
+
+    expect(report.summary.orchestrationCents).toBe(300);
+    expect(report.summary.executionCents).toBe(0);
+    expect(report.summary.subscriptionEventCount).toBe(1);
+    // tokens tell the opposite story to cents; that disagreement is the point
+    expect(report.summary.orchestrationTokenRatio).toBeCloseTo(0.0196, 3);
+
+    expect(report.summary.basis).toBe("indeterminate");
+    expect(report.trees).toHaveLength(1);
+    expect(report.trees[0].overheadVerdict).toBe("indeterminate");
+    expect(report.summary.invertedTreeCount).toBe(0);
+    expect(report.summary.judgedTreeCount).toBe(0);
+    expect(report.summary.treeCount).toBe(1);
+    // the subscription spend is counted, not dropped — it is just held out of cents
+    expect(report.summary.exclusions.countedEventCount).toBe(2);
+    expect(report.summary.exclusions.noIssueEventCount).toBe(0);
+  });
+
+  it("keeps the ratio and the inversion verdict on one denominator", async () => {
+    const { companyId, agentId } = await seedCompany("ORCR");
+    const rootId = await seedIssue({ companyId, requestDepth: 0, title: "Ratio root" });
+    const childId = await seedIssue({ companyId, parentId: rootId, requestDepth: 1, title: "Child" });
+    const otherId = await seedIssue({ companyId, parentId: rootId, requestDepth: 1, title: "Other" });
+
+    const orchestrationRun = await seedRun(companyId, agentId);
+    const executionRun = await seedRun(companyId, agentId);
+    const idleRun = await seedRun(companyId, agentId);
+    await markOrchestrationRun(companyId, rootId, orchestrationRun);
+    await markExecutionRun(companyId, childId, executionRun);
+
+    await seedCostEvent({ companyId, agentId, issueId: rootId, runId: orchestrationRun, costCents: 300 });
+    await seedCostEvent({ companyId, agentId, issueId: childId, runId: executionRun, costCents: 250 });
+    await seedCostEvent({ companyId, agentId, issueId: otherId, runId: idleRun, costCents: 450 });
+
+    const report = await service.report(companyId);
+    const [tree] = report.trees;
+
+    // 300 of 550 classified, not 300 of 1000 total: a ratio under 50% beside an
+    // "orchestration-heavy" badge was the contradiction being fixed
+    expect(tree.orchestrationCostRatio).toBeCloseTo(0.5455, 4);
+    expect(tree.unclassifiedCents).toBe(450);
+    expect(tree.overheadVerdict).toBe("inverted");
+    expect((tree.orchestrationCostRatio ?? 0) > 0.5).toBe(true);
+  });
+
+  it("does not judge a tree that has barely spent", async () => {
+    const { companyId, agentId } = await seedCompany("ORCF");
+    const rootId = await seedIssue({ companyId, requestDepth: 0, title: "Fresh root" });
+    const runId = await seedRun(companyId, agentId);
+    await markOrchestrationRun(companyId, rootId, runId);
+    await seedCostEvent({ companyId, agentId, issueId: rootId, runId, costCents: 1 });
+
+    const report = await service.report(companyId);
+
+    expect(report.trees[0].overheadVerdict).toBe("below_floor");
+    expect(report.summary.invertedTreeCount).toBe(0);
+    expect(report.summary.judgedTreeCount).toBe(0);
+    expect(report.thresholds.minClassifiedCents).toBe(100);
+  });
+
+  it("defers the verdict while the tree still has open work", async () => {
+    const { companyId, agentId } = await seedCompany("ORCI");
+    const rootId = await seedIssue({
+      companyId,
+      requestDepth: 0,
+      title: "Live root",
+      status: "in_progress",
+    });
+    const runId = await seedRun(companyId, agentId);
+    await markOrchestrationRun(companyId, rootId, runId);
+    await seedCostEvent({ companyId, agentId, issueId: rootId, runId, costCents: 900 });
+
+    const report = await service.report(companyId);
+
+    expect(report.trees[0].inFlight).toBe(true);
+    expect(report.trees[0].overheadVerdict).toBe("in_flight");
+    expect(report.summary.invertedTreeCount).toBe(0);
+  });
+
+  it("accounts for every cost event that never reaches a tree", async () => {
+    const { companyId, agentId } = await seedCompany("ORCX");
+    const visibleRoot = await seedIssue({ companyId, requestDepth: 0, title: "Visible root" });
+    const hiddenRoot = await seedIssue({
+      companyId,
+      requestDepth: 0,
+      title: "Hidden status card",
+      hidden: true,
+    });
+    // the subtree under a hidden ancestor is severed even though the child itself
+    // is perfectly visible — status cards and summary slots create exactly this
+    const severedChild = await seedIssue({
+      companyId,
+      parentId: hiddenRoot,
+      requestDepth: 1,
+      title: "Severed child",
+    });
+
+    const visibleRun = await seedRun(companyId, agentId);
+    const severedRun = await seedRun(companyId, agentId);
+    await markExecutionRun(companyId, visibleRoot, visibleRun);
+    await markExecutionRun(companyId, severedChild, severedRun);
+
+    await seedCostEvent({ companyId, agentId, issueId: visibleRoot, runId: visibleRun, costCents: 400 });
+    await seedCostEvent({ companyId, agentId, issueId: severedChild, runId: severedRun, costCents: 700 });
+    // a valid issue but no heartbeat run: unclassifiable, and previously invisible
+    await seedCostEvent({ companyId, agentId, issueId: visibleRoot, runId: null, costCents: 30 });
+    await seedCostEvent({ companyId, agentId, issueId: null, runId: visibleRun, costCents: 20 });
+
+    const report = await service.report(companyId);
+    const { exclusions } = report.summary;
+
+    expect(report.summary.totalCents).toBe(400);
+    expect(exclusions.hiddenTreeEventCount).toBe(1);
+    expect(exclusions.hiddenTreeCostCents).toBe(700);
+    expect(exclusions.noRunEventCount).toBe(1);
+    expect(exclusions.noRunCostCents).toBe(30);
+    expect(exclusions.noIssueEventCount).toBe(1);
+    expect(exclusions.noIssueCostCents).toBe(20);
+    expect(exclusions.countedEventCount).toBe(1);
+    expect(exclusions.countedCostCents).toBe(400);
+
+    // the drop reasons and the counted rows account for the entire range, so the
+    // gap against the Overview total is always explainable
+    expect(exclusions.totalEventCount).toBe(4);
+    expect(exclusions.totalCostCents).toBe(1150);
+    expect(
+      exclusions.countedCostCents +
+        exclusions.hiddenTreeCostCents +
+        exclusions.noRunCostCents +
+        exclusions.noIssueCostCents +
+        exclusions.unresolvedIssueCostCents,
+    ).toBe(exclusions.totalCostCents);
   });
 
   it("never reads across a company boundary", async () => {
@@ -453,7 +651,9 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
       to: new Date("2026-08-31T23:59:59.999Z"),
     });
     expect(inRange.summary.executionCents).toBe(120);
-    expect(inRange.summary.unattributedEventCount).toBe(1);
+    expect(inRange.summary.exclusions.noIssueEventCount).toBe(1);
+    expect(inRange.summary.exclusions.noIssueCostCents).toBe(55);
+    expect(inRange.summary.exclusions.totalEventCount).toBe(2);
 
     const outOfRange = await service.report(companyId, {
       from: new Date("2026-09-01T00:00:00.000Z"),
@@ -461,7 +661,7 @@ describeEmbeddedPostgres("orchestration cost read model", () => {
     });
     expect(outOfRange.summary.totalCents).toBe(0);
     expect(outOfRange.trees).toEqual([]);
-    expect(outOfRange.summary.unattributedEventCount).toBe(0);
+    expect(outOfRange.summary.exclusions.totalEventCount).toBe(0);
   });
 
   it("caps the returned trees and returns the heaviest first", async () => {

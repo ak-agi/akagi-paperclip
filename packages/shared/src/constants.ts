@@ -881,6 +881,51 @@ export type CostStatus = (typeof COST_STATUSES)[number];
  */
 export const ORCHESTRATION_RUN_CLASSES = ["execution", "orchestration", "unclassified"] as const;
 
+/**
+ * Which unit an orchestration-vs-execution comparison can honestly be read on.
+ *
+ * - `cents`         — every row in the group is priced and metered, so the cent
+ *                     sums account for all of the work being compared
+ * - `tokens`        — the group has no priced spend at all, so tokens are the
+ *                     only unit and every row contributes to them
+ * - `indeterminate` — priced rows sit alongside rows held out of the cent sums
+ *                     (unpriced, or `subscription_included`). Cents would ignore
+ *                     the held-out work entirely and tokens would flatten a
+ *                     metered dollar against a subscription one, so no verdict
+ *                     is issued.
+ */
+export const ORCHESTRATION_COST_BASES = ["cents", "tokens", "indeterminate"] as const;
+
+/**
+ * Verdict on the "orchestration cost must not exceed execution cost" invariant
+ * for a single issue tree.
+ *
+ * - `inverted`      — orchestration outweighs execution on the tree's basis
+ * - `balanced`      — it does not
+ * - `in_flight`     — the tree still has open work, so the split is not final
+ * - `below_floor`   — the tree has not spent enough to judge
+ * - `indeterminate` — the tree has no honest basis to be judged on
+ */
+export const ORCHESTRATION_OVERHEAD_VERDICTS = [
+  "inverted",
+  "balanced",
+  "in_flight",
+  "below_floor",
+  "indeterminate",
+] as const;
+
+/**
+ * Reasons a company cost event in range never reaches an issue tree, and is
+ * therefore absent from every measure in the routing report. They are mutually
+ * exclusive and evaluated in this order, so the counts always sum to the total.
+ */
+export const ORCHESTRATION_COST_EXCLUSION_REASONS = [
+  "no_issue",
+  "no_run",
+  "unresolved_issue",
+  "hidden_tree",
+] as const;
+
 export const FINANCE_EVENT_KINDS = [
   "inference_charge",
   "platform_fee",

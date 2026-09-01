@@ -7,6 +7,7 @@ import {
   timestamp,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { SourceTrustMetadata } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -62,5 +63,11 @@ export const issueWorkProducts = pgTable(
       table.companyId,
       table.updatedAt,
     ),
+    // "did this run produce a work product?" — the orchestration cost read
+    // model asks that once per cost-bearing run. Partial because the column is
+    // null for anything a run did not create.
+    companyCreatedByRunIdx: index("issue_work_products_company_created_by_run_idx")
+      .on(table.companyId, table.createdByRunId)
+      .where(sql`${table.createdByRunId} is not null`),
   }),
 );

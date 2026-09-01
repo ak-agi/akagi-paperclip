@@ -872,9 +872,13 @@ export type {
 export type { CostEvent, CostSummary, IssueCostSummary, CostByAgent, CostByProviderModel, CostByBiller, CostByAgentModel, CostWindowSpendRow, CostByProject } from "./cost.js";
 export type {
   OrchestrationRunClass,
+  OrchestrationCostBasis,
+  OrchestrationOverheadVerdict,
+  OrchestrationCostExclusionReason,
   OrchestrationCostMeasures,
   OrchestrationCostTree,
   OrchestrationCostDepth,
+  OrchestrationCostExclusions,
   OrchestrationCostSummary,
   OrchestrationCostReport,
 } from "./cost.js";

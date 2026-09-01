@@ -51,8 +51,24 @@ const routingReport: OrchestrationCostReport = {
   summary: {
     companyId: "company-1",
     issueCount: 2,
+    treeCount: 1,
+    judgedTreeCount: 1,
     invertedTreeCount: 1,
-    unattributedEventCount: 0,
+    exclusions: {
+      totalEventCount: 4,
+      totalCostCents: 1000,
+      countedEventCount: 4,
+      countedCostCents: 1000,
+      heldOutCostCents: 0,
+      noIssueEventCount: 0,
+      noIssueCostCents: 0,
+      noRunEventCount: 0,
+      noRunCostCents: 0,
+      unresolvedIssueEventCount: 0,
+      unresolvedIssueCostCents: 0,
+      hiddenTreeEventCount: 0,
+      hiddenTreeCostCents: 0,
+    },
     orchestrationRunCount: 3,
     executionRunCount: 1,
     unclassifiedRunCount: 0,
@@ -68,6 +84,7 @@ const routingReport: OrchestrationCostReport = {
     orchestrationTokenRatio: 0.6,
     unpricedEventCount: 0,
     subscriptionEventCount: 0,
+    basis: "cents",
   },
   trees: [
     {
@@ -76,7 +93,8 @@ const routingReport: OrchestrationCostReport = {
       rootIssueTitle: "Migrate the org chart",
       issueCount: 2,
       maxRequestDepth: 1,
-      overheadInverted: true,
+      inFlight: false,
+      overheadVerdict: "inverted",
       orchestrationRunCount: 3,
       executionRunCount: 1,
       unclassifiedRunCount: 0,
@@ -92,9 +110,11 @@ const routingReport: OrchestrationCostReport = {
       orchestrationTokenRatio: 0.6,
       unpricedEventCount: 0,
       subscriptionEventCount: 0,
+      basis: "cents",
     },
   ],
   byDepth: [],
+  thresholds: { minClassifiedCents: 100, minClassifiedTokens: 1_000_000 },
 };
 
 async function flushReact() {

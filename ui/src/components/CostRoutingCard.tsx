@@ -1,4 +1,10 @@
-import type { OrchestrationCostMeasures, OrchestrationCostReport } from "@paperclipai/shared";
+import type {
+  OrchestrationCostBasis,
+  OrchestrationCostExclusions,
+  OrchestrationCostMeasures,
+  OrchestrationCostReport,
+  OrchestrationCostTree,
+} from "@paperclipai/shared";
 import { AlertTriangle, GitBranch, Network } from "lucide-react";
 import { EmptyState } from "./EmptyState";
 import { cn, formatCents, formatTokens } from "../lib/utils";
@@ -10,30 +16,45 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
  *
  * Cents are shown for priced, metered rows only. Unpriced rows carry no amount,
  * and subscription-billed agents report ~zero marginal cost, so both are held
- * out of the cent sums and reported as footnotes. Tokens include every row, so
- * a company running only subscription agents still gets a usable ratio.
+ * out of the cent sums and reported as footnotes. Tokens include every row.
+ *
+ * Because those two units cover different subsets of the work, the server ships
+ * a `basis` for every group saying which one — if either — that group can be
+ * compared on. This component never picks a unit itself: an `indeterminate`
+ * group shows its raw numbers and no verdict, so a cents verdict and a tokens
+ * verdict can never be rendered the same way.
  */
-
-/**
- * Which measure the ratio can honestly be read on. Priced, metered cents win.
- * Tokens are the fallback for a company that only runs subscription-billed or
- * unpriced agents, which would otherwise always read as "no overhead".
- */
-export function orchestrationBasis(
-  measures: OrchestrationCostMeasures,
-): "cost" | "tokens" | "none" {
-  if (measures.totalCents > 0) return "cost";
-  if (measures.totalTokens > 0) return "tokens";
-  return "none";
-}
-
-function usesTokenBasis(measures: OrchestrationCostMeasures): boolean {
-  return orchestrationBasis(measures) === "tokens";
-}
 
 export function formatRatio(value: number | null): string {
   if (value == null) return "—";
   return `${Math.round(value * 100)}%`;
+}
+
+/** the ratio that matches the group's basis, or null when it has none */
+export function basisRatio(measures: OrchestrationCostMeasures): number | null {
+  if (measures.basis === "cents") return measures.orchestrationCostRatio;
+  if (measures.basis === "tokens") return measures.orchestrationTokenRatio;
+  return null;
+}
+
+const BASIS_NOTE: Record<OrchestrationCostBasis, string> = {
+  cents: "Measured on priced, metered spend",
+  tokens: "Measured on tokens — no priced spend in range",
+  indeterminate: "Not comparable — priced and held-out rows are mixed",
+};
+
+/**
+ * Split shares for the meter. An indeterminate group is drawn on tokens, the
+ * only unit every row contributes to, so the bar still shows the shape of the
+ * work; the absent ratio and the absent badge carry the "no verdict" message.
+ */
+function splitParts(measures: OrchestrationCostMeasures) {
+  const onCents = measures.basis === "cents";
+  return {
+    orchestration: onCents ? measures.orchestrationCents : measures.orchestrationTokens,
+    execution: onCents ? measures.executionCents : measures.executionTokens,
+    unclassified: onCents ? measures.unclassifiedCents : measures.unclassifiedTokens,
+  };
 }
 
 /**
@@ -97,14 +118,34 @@ function InvertedBadge() {
   );
 }
 
+/**
+ * Why a tree carries no verdict. Deliberately muted: "we did not judge this"
+ * must not read like "this is broken".
+ */
+function VerdictNote({ tree }: { tree: OrchestrationCostTree }) {
+  if (tree.overheadVerdict === "inverted") return <InvertedBadge />;
+  if (tree.overheadVerdict === "balanced") return null;
+  const label =
+    tree.overheadVerdict === "in_flight"
+      ? "Still in flight"
+      : tree.overheadVerdict === "below_floor"
+        ? "Below the spend floor"
+        : "Not comparable";
+  return (
+    <Badge variant="outline" className="text-muted-foreground">
+      {label}
+    </Badge>
+  );
+}
+
 function MeasureCell({ measures }: { measures: OrchestrationCostMeasures }) {
-  const tokenBasis = usesTokenBasis(measures);
-  const primary = tokenBasis
-    ? formatRatio(measures.orchestrationTokenRatio)
-    : formatRatio(measures.orchestrationCostRatio);
-  const secondary = tokenBasis
-    ? `${formatTokens(measures.orchestrationTokens)} of ${formatTokens(measures.totalTokens)} tokens`
-    : `${formatCents(measures.orchestrationCents)} of ${formatCents(measures.totalCents)}`;
+  const primary = formatRatio(basisRatio(measures));
+  const secondary =
+    measures.basis === "tokens"
+      ? `${formatTokens(measures.orchestrationTokens)} of ${formatTokens(measures.orchestrationTokens + measures.executionTokens)} tokens`
+      : measures.basis === "cents"
+        ? `${formatCents(measures.orchestrationCents)} of ${formatCents(measures.orchestrationCents + measures.executionCents)}`
+        : `${formatCents(measures.totalCents)} priced · ${formatTokens(measures.totalTokens)} tok`;
   return (
     <div className="min-w-0">
       <div className="font-medium tabular-nums">{primary}</div>
@@ -113,12 +154,44 @@ function MeasureCell({ measures }: { measures: OrchestrationCostMeasures }) {
   );
 }
 
+/**
+ * Full drop accounting. Every cost event in the range is either counted here or
+ * named as an exclusion, so a gap against the Overview total is always
+ * explainable rather than a silent disappearance.
+ */
+function ExclusionNote({ exclusions }: { exclusions: OrchestrationCostExclusions }) {
+  const reasons: Array<[number, string]> = [
+    [exclusions.noIssueEventCount, "no issue"],
+    [exclusions.noRunEventCount, "no run"],
+    [exclusions.hiddenTreeEventCount, "hidden issue tree"],
+    [exclusions.unresolvedIssueEventCount, "unresolved issue"],
+  ];
+  const present = reasons.filter(([count]) => count > 0);
+  const droppedCents =
+    exclusions.totalCostCents - exclusions.countedCostCents;
+  if (present.length === 0 && exclusions.heldOutCostCents === 0) return null;
+  return (
+    <div className="space-y-1 text-xs text-muted-foreground">
+      {present.length > 0 ? (
+        <p>
+          {present.reduce((sum, [count]) => sum + count, 0)} of {exclusions.totalEventCount} cost
+          events in range ({formatCents(droppedCents)}) are not ranked below:{" "}
+          {present.map(([count, label]) => `${count} ${label}`).join(" · ")}.
+        </p>
+      ) : null}
+      {exclusions.heldOutCostCents > 0 ? (
+        <p>
+          A further {formatCents(exclusions.heldOutCostCents)} of counted spend is unpriced or
+          subscription-billed and is held out of every cent figure above.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 export function CostRoutingCard({ report }: { report: OrchestrationCostReport }) {
-  const { summary, trees, byDepth } = report;
-  const tokenBasis = usesTokenBasis(summary);
-  const headlineRatio = tokenBasis
-    ? formatRatio(summary.orchestrationTokenRatio)
-    : formatRatio(summary.orchestrationCostRatio);
+  const { summary, trees, byDepth, thresholds } = report;
+  const headlineRatio = formatRatio(basisRatio(summary));
 
   return (
     <div className="space-y-4">
@@ -128,9 +201,9 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
             <div className="min-w-0">
               <CardTitle className="text-base">Orchestration overhead</CardTitle>
               <CardDescription>
-                Share of spend that went into delegating work rather than doing it. Runs that
-                produced a work product or a document revision count as execution. Runs that only
-                created child issues, commented, or reassigned count as orchestration.
+                Share of classified spend that went into delegating work rather than doing it. Runs
+                that produced a work product or a document revision count as execution. Runs that
+                only created child issues, commented, or reassigned count as orchestration.
               </CardDescription>
             </div>
             {summary.invertedTreeCount > 0 ? <InvertedBadge /> : null}
@@ -143,9 +216,7 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
                 Orchestration share
               </div>
               <div className="mt-2 text-2xl font-semibold tabular-nums">{headlineRatio}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {tokenBasis ? "Measured on tokens — no priced spend in range" : "Measured on priced, metered spend"}
-              </div>
+              <div className="mt-1 text-xs text-muted-foreground">{BASIS_NOTE[summary.basis]}</div>
             </div>
             <div>
               <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
@@ -160,9 +231,22 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
               <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                 Inverted trees
               </div>
-              <div className="mt-2 text-2xl font-semibold tabular-nums">{summary.invertedTreeCount}</div>
+              <div className="mt-2 text-2xl font-semibold tabular-nums">
+                {summary.invertedTreeCount}
+                <span className="text-base font-normal text-muted-foreground">
+                  /{summary.judgedTreeCount}
+                </span>
+              </div>
               <div className="mt-1 text-xs text-muted-foreground">
-                Trees that spent more on orchestration than on execution
+                Of {summary.judgedTreeCount} judged tree
+                {summary.judgedTreeCount === 1 ? "" : "s"}
+                {summary.treeCount > summary.judgedTreeCount ? (
+                  <>
+                    {" "}
+                    — {summary.treeCount - summary.judgedTreeCount} not judged: still in flight,
+                    below {formatCents(thresholds.minClassifiedCents)}, or not comparable
+                  </>
+                ) : null}
               </div>
             </div>
             <div>
@@ -180,19 +264,11 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
 
           <SplitMeter
             label={`Company split: ${headlineRatio} orchestration`}
-            orchestration={tokenBasis ? summary.orchestrationTokens : summary.orchestrationCents}
-            execution={tokenBasis ? summary.executionTokens : summary.executionCents}
-            unclassified={tokenBasis ? summary.unclassifiedTokens : summary.unclassifiedCents}
+            {...splitParts(summary)}
           />
           <MeterLegend />
 
-          {summary.unattributedEventCount > 0 ? (
-            <p className="text-xs text-muted-foreground">
-              {summary.unattributedEventCount} cost event
-              {summary.unattributedEventCount === 1 ? "" : "s"} in range carry no issue and are not
-              ranked below.
-            </p>
-          ) : null}
+          <ExclusionNote exclusions={summary.exclusions} />
         </CardContent>
       </Card>
 
@@ -201,8 +277,8 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
           <CardHeader className="px-5 pt-5 pb-2">
             <CardTitle className="text-base">By issue tree</CardTitle>
             <CardDescription>
-              Root issues ranked by total attributed spend. An issue tree whose orchestration cost
-              exceeds its execution cost is a bug.
+              Root issues ranked by total attributed spend. A settled issue tree whose orchestration
+              cost exceeds its execution cost is a bug.
             </CardDescription>
           </CardHeader>
           <CardContent className="px-5 pb-5 pt-2">
@@ -227,11 +303,11 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
                   {trees.map((tree) => (
                     <tr key={tree.rootIssueId} className="border-b border-border last:border-0">
                       <td className="max-w-0 px-2 py-2 align-top">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-muted-foreground">
                             {tree.rootIssueIdentifier ?? tree.rootIssueId.slice(0, 8)}
                           </span>
-                          {tree.overheadInverted ? <InvertedBadge /> : null}
+                          <VerdictNote tree={tree} />
                         </div>
                         <div className="truncate text-muted-foreground">
                           {tree.rootIssueTitle ?? "Untitled"}
@@ -240,13 +316,7 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
                       <td className="w-32 px-2 py-2 align-top">
                         <SplitMeter
                           label={`${tree.rootIssueIdentifier ?? "Tree"} split`}
-                          orchestration={
-                            usesTokenBasis(tree) ? tree.orchestrationTokens : tree.orchestrationCents
-                          }
-                          execution={usesTokenBasis(tree) ? tree.executionTokens : tree.executionCents}
-                          unclassified={
-                            usesTokenBasis(tree) ? tree.unclassifiedTokens : tree.unclassifiedCents
-                          }
+                          {...splitParts(tree)}
                         />
                       </td>
                       <td className="px-2 py-2 align-top">
@@ -282,36 +352,27 @@ export function CostRoutingCard({ report }: { report: OrchestrationCostReport })
                 description="Depth appears once agents create child issues for other agents."
               />
             ) : (
-              byDepth.map((depth) => {
-                const depthTokenBasis = usesTokenBasis(depth);
-                return (
-                  <div key={depth.requestDepth} className="space-y-1">
-                    <div className="flex items-center justify-between gap-2 text-xs">
-                      <span className={cn("font-mono text-muted-foreground")}>
-                        depth {depth.requestDepth}
-                      </span>
-                      <span className="text-muted-foreground">
-                        {depth.issueCount} issue{depth.issueCount === 1 ? "" : "s"}
-                      </span>
-                      <span className="font-medium tabular-nums">
-                        {depthTokenBasis
-                          ? formatTokens(depth.totalTokens) + " tok"
-                          : formatCents(depth.totalCents)}
-                      </span>
-                    </div>
-                    <SplitMeter
-                      label={`Depth ${depth.requestDepth} split`}
-                      orchestration={
-                        depthTokenBasis ? depth.orchestrationTokens : depth.orchestrationCents
-                      }
-                      execution={depthTokenBasis ? depth.executionTokens : depth.executionCents}
-                      unclassified={
-                        depthTokenBasis ? depth.unclassifiedTokens : depth.unclassifiedCents
-                      }
-                    />
+              byDepth.map((depth) => (
+                <div key={depth.requestDepth} className="space-y-1">
+                  <div className="flex items-center justify-between gap-2 text-xs">
+                    <span className={cn("font-mono text-muted-foreground")}>
+                      depth {depth.requestDepth}
+                    </span>
+                    <span className="text-muted-foreground">
+                      {depth.issueCount} issue{depth.issueCount === 1 ? "" : "s"}
+                    </span>
+                    <span className="font-medium tabular-nums">
+                      {depth.basis === "cents"
+                        ? formatCents(depth.totalCents)
+                        : `${formatTokens(depth.totalTokens)} tok`}
+                    </span>
                   </div>
-                );
-              })
+                  <SplitMeter
+                    label={`Depth ${depth.requestDepth} split`}
+                    {...splitParts(depth)}
+                  />
+                </div>
+              ))
             )}
             <MeterLegend />
           </CardContent>
