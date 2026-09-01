@@ -272,3 +272,154 @@ fallback (PR-2, PR-4), read-model aggregation including the `unpriced` exclusion
 Ship PR-1, PR-2 and PR-3 first. Together they add the primitive, the ladder, and
 the instrument — with zero behavior change. PR-4 is the switch that turns the
 feature on, and by then §10 can tell you whether it paid.
+
+---
+
+# Wave 1 Outcome and Wave 2 Handoff
+
+Added 2026-09-02, after Wave 1 shipped. Read this section before starting Wave 2;
+several decisions below change what PR-4 has to do.
+
+## 16. What Shipped
+
+| PR | Commit | Scope |
+|---|---|---|
+| #10 | `f7784eab3` | This plan |
+| #14 | `40cfc2b94` | CI fix (see §20) |
+| #13 | `34bda44a3` | PR-1 — tier primitive |
+| #12 | `dfdf9160c` | PR-3 — orchestration cost measurement |
+| #11 | `da159fc57` | PR-2 — model lane ladder |
+
+All three carry **zero behavior change**. Nothing selects a lane by tier yet.
+That is PR-4, and it is the switch that turns the feature on.
+
+## 17. Decisions Made During Implementation
+
+These differ from, or add to, §4–§6 above.
+
+**Tier taxonomy shipped as planned.** `AGENT_TIERS = ["principal", "senior", "mid",
+"junior"]` with `AGENT_TIER_LABELS`, `AGENT_TIER_RANKS` (0..3) and `isAgentTier()`
+in `packages/shared/src/constants.ts`. `agents.tier` is nullable (migration `0234`),
+no default, no backfill.
+
+**`Agent.tier` is optional on the type** (`tier?: AgentTier | null`), not required,
+so external plugins constructing `Agent` literals through `@paperclipai/plugins-sdk`
+still typecheck.
+
+**Lane ladder shipped as planned.** `MODEL_PROFILE_KEYS = ["cheap", "senior", "mid",
+"junior"]`, plus `WORK_MODEL_PROFILE_KEYS = ["senior", "mid", "junior"]` and
+`isWorkModelProfileKey()` to separate work lanes from the reserved recovery lane.
+`AdapterModelProfileKey` now derives from the shared constant rather than
+duplicating the literals.
+
+**The §9.3 recovery guard no longer keys off the lane.** This is the most important
+change for PR-4. `isStatusOnlyRecoveryGuardContext()` in
+`server/src/services/recovery/model-profile-hint.ts` tests `recoveryIntent` plus the
+three guard flags — never `context.modelProfile`. It replaced two duplicated
+predicates in `routes/issues.ts` and `routes/approvals.ts`.
+
+Why: `resolveModelProfileApplication()` gives the issue override priority over the
+wake context, and dispatch writes the winner back into the run's persisted
+`contextSnapshot`. While `"cheap"` was the only possible value that write was a
+no-op for recovery runs. Once work lanes existed, an issue carrying
+`modelProfile: "senior"` turned every subsequent status-only recovery wake for that
+issue into an unguarded Opus-class run that still advertised
+`allowDeliverableWork: false`.
+
+**A status-only recovery context now wins over the per-issue override** in
+`resolveModelProfileApplication()`. Precedence is unchanged for every other case: an
+ordinary wake-context lane still loses to an issue override.
+
+**`assertCheapRecoveryIssueAssigneeProfileAllowed` now rejects any lane**, not only
+`"cheap"`. Pre-widening those were the same check.
+
+**The agent profile consent gate now gates on intersection.**
+`server/src/routes/agents.ts` previously required *every* key in a PATCH to be a
+consent field, so `PATCH {"tier":"principal","icon":"bot"}` from an agent's own key
+bypassed it entirely. A mixed patch now clears both `assertCanUpdateAgent` and
+`assertCanApplyAgentProfileChange`. The ordinary check runs first on purpose: the
+consent check *consumes* the stored confirmation record, so a request that will be
+denied must not burn it. This also closed the same hole for `name`, `role`, `title`
+and `capabilities`, which was pre-existing on master.
+
+## 18. Known Gaps PR-4 Must Close
+
+**Work lanes are enabled by default with no operator kill switch.** New agents are
+seeded `modelProfiles.cheap = { enabled: false }` (`routes/agents.ts`), but nothing
+equivalent for work lanes, and an absent runtime entry means enabled. The agent
+config UI can only write `runtimeConfig.modelProfiles.cheap` —
+`ui/src/lib/agent-config-patch.ts` types the overlay as `{ cheap?: … }`. So the
+*request* path is live for agents and the wake API today while the *disable* path is
+not. Any agent that can create or update an issue can pin work to `senior`, the
+priciest lane, with no approval gate.
+
+**Create-time tier is not consent-gated.** The gate is PATCH-only.
+`createAgentSchema` accepts `tier`, and both create routes spread it into
+`svc.create`, so an agent principal with `agents:create` can spawn an agent at
+`tier: "principal"` with no consent record. The company importer does the same on
+its create path and is reachable by a same-company CEO agent. Agent-safe imports
+cannot re-tier an *existing* agent, so this is "spawn high-tier", not "re-tier a
+peer". It is not tier-specific — `name`, `role`, `title` and `capabilities` share
+the path — and the consent gate keys on the target agent's id
+(`agent:<id>:profile`), which does not exist pre-create, so closing it needs a new
+target-key concept.
+
+Both gaps are benign while tier is metadata-only. **Both become real the moment PR-4
+binds tier to a lane.**
+
+## 19. The Measurement Surface (from PR-3)
+
+Use this to judge whether PR-4 paid. Do not re-derive it.
+
+- `GET /api/companies/{companyId}/costs/routing`, Costs → Routing tab
+- Service: `server/src/services/orchestration-costs.ts`
+- `overheadVerdict: "inverted" | "balanced" | "in_flight" | "below_floor" |
+  "indeterminate"` — replaced a boolean so `false` cannot be read as "healthy"
+- `basis: "cents" | "tokens" | "indeterminate"` on every grain. Cents are only an
+  honest basis when no row was held out; `unpriced` and `subscription_included` rows
+  are both excluded from cent sums, so a tree mixing metered and subscription spend
+  reports `indeterminate` rather than a false verdict
+- An `exclusions` block (`no_issue`, `no_run`, `unresolved_issue`, `hidden_tree`)
+  accounts for every dropped cost event, so the Routing total always reconciles with
+  the Overview total
+- Indexes in migration `0235`, with `migration-safety-ignore` annotations because
+  drizzle applies migrations transactionally and cannot use `CONCURRENTLY`
+
+Known bias, deliberately not fixed: run classification is winner-take-all with
+execution precedence, and the execution probes are company-scoped rather than
+tree-scoped. Both **under-report** orchestration, so the instrument errs toward "no
+problem here". Revisit before the numbers gate anything.
+
+## 20. Environment and Process Notes
+
+- `pnpm` is not on PATH. Use `corepack pnpm`. Some nested scripts call bare `pnpm`;
+  a shim on PATH fixes those.
+- Rust is installed but not on PATH in non-login shells:
+  `export PATH="$HOME/.cargo/bin:$PATH"`. A failure in `packages/paperclip-runner`
+  is a PATH problem, not a missing toolchain.
+- Do not run the full `pnpm test:run` concurrently in several worktrees.
+  `workspace-runtime-exposure*` binds a fixed port range `[42000, 42999]` and the
+  runs collide. Use targeted runs while iterating and let CI do the full pass.
+- Known flaky, unrelated to this work: `adapter-utils`
+  `execution-target-stdin-race.test.ts` T22/T24 (load-induced; passes in isolation
+  on master) and the Rust `codex_provider`
+  `ambiguous_replacement_turn_adopts_one_later_completion_identity`.
+- CI was previously red on every pull request. `policy` failed on
+  `release-verify-workflow.test.mjs`, and `verify` and `e2e` both assert
+  `POLICY_RESULT = success` before anything else, so every downstream job showed
+  `skipping` and no pull request received real verification. Fixed in #14. If those
+  three go red together again, check `policy` first.
+
+## 21. The Bug Pattern Worth Watching
+
+Three separate defects in Wave 1 were the same shape: **a check written when a set
+had one member, silently weakened when the set grew.**
+
+- `isStatusOnlyCheapRecoveryContext` compared `modelProfile === "cheap"`
+- `assertCheapRecoveryIssueAssigneeProfileAllowed` rejected only `"cheap"` downstream
+- `profileOnlyChange` used `.every()`, safe only while nobody added a second key
+
+Each was correct when written and became incorrect through a change elsewhere, with
+no test failing. In all three cases the authoring agent asserted a test covered it
+and the test did not exercise the case. When PR-4 widens behavior again, write the
+test that fails against the *old* code first.
