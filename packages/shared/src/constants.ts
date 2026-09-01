@@ -74,6 +74,42 @@ export const AGENT_ROLE_LABELS: Record<AgentRole, string> = {
   general: "General",
 };
 
+// Seniority tier for an agent, ordered most to least capable. It is orthogonal
+// to `AGENT_ROLES`: a senior engineer and a junior engineer share the role
+// `engineer` and differ only in tier. The tier is stored, not derived from org
+// depth, because depth is not seniority.
+export const AGENT_TIERS = ["principal", "senior", "mid", "junior"] as const;
+export type AgentTier = (typeof AGENT_TIERS)[number];
+
+export const AGENT_TIER_LABELS: Record<AgentTier, string> = {
+  principal: "Principal",
+  senior: "Senior",
+  mid: "Mid",
+  junior: "Junior",
+};
+
+// Ordering rank for a tier: 0 is the most capable, 3 the least. Use the rank for
+// comparisons instead of comparing tier strings.
+export const AGENT_TIER_RANKS: Record<AgentTier, number> = {
+  principal: 0,
+  senior: 1,
+  mid: 2,
+  junior: 3,
+};
+
+export function isAgentTier(value: unknown): value is AgentTier {
+  return typeof value === "string" && (AGENT_TIERS as readonly string[]).includes(value);
+}
+
+/**
+ * Rank of a tier for ordering comparisons. Returns `null` when no tier is
+ * declared, because an undeclared tier is not "the lowest tier" — it means the
+ * agent opts out of the tier ladder entirely.
+ */
+export function agentTierRank(tier: string | null | undefined): number | null {
+  return isAgentTier(tier) ? AGENT_TIER_RANKS[tier] : null;
+}
+
 export const AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 20;
 export const WORKSPACE_BRANCH_ROUTINE_VARIABLE = "workspaceBranch";
 

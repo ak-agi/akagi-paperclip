@@ -19,6 +19,7 @@ function agent(partial: Partial<Agent>): Agent {
     name: "Coder",
     urlKey: "coder",
     role: "engineer",
+    tier: null,
     title: null,
     icon: null,
     status: "idle",

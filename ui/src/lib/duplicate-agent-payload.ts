@@ -19,6 +19,7 @@ type DuplicateAgentSource = Pick<
   AgentDetail,
   | "name"
   | "role"
+  | "tier"
   | "title"
   | "icon"
   | "reportsTo"
@@ -65,6 +66,7 @@ export function buildDuplicateAgentPayload(
     },
   };
 
+  if (agent.tier) payload.tier = agent.tier;
   if (agent.title) payload.title = agent.title;
   if (agent.icon) payload.icon = agent.icon;
   if (agent.reportsTo) payload.reportsTo = agent.reportsTo;

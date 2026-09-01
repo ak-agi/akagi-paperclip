@@ -3,6 +3,7 @@ import {
   AGENT_ICON_NAMES,
   AGENT_ROLES,
   AGENT_STATUSES,
+  AGENT_TIERS,
   INBOX_MINE_ISSUE_STATUS_FILTER,
 } from "../constants.js";
 import { agentAdapterTypeSchema } from "../adapter-type.js";
@@ -72,6 +73,9 @@ export const agentRuntimeConfigSchema = z.object({
 export const createAgentSchema = z.object({
   name: z.string().min(1),
   role: z.enum(AGENT_ROLES).optional().default("general"),
+  // Seniority tier. Optional and nullable: omitting it or sending `null`
+  // declares no tier, which is the pre-existing behaviour for every agent.
+  tier: z.enum(AGENT_TIERS).optional().nullable(),
   title: z.string().optional().nullable(),
   icon: z.enum(AGENT_ICON_NAMES).optional().nullable(),
   reportsTo: z.string().guid().optional().nullable(),

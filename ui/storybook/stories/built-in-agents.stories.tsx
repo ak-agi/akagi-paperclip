@@ -29,6 +29,7 @@ const briefsAgent: Agent = {
   name: "Briefs Agent",
   urlKey: "briefs-agent",
   role: "general",
+  tier: null,
   title: null,
   icon: "sparkles",
   status: "idle",

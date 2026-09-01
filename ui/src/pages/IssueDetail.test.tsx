@@ -661,6 +661,7 @@ function createAgent(overrides: Partial<Agent> = {}): Agent {
     name: "CodexCoder",
     urlKey: "codexcoder",
     role: "engineer",
+    tier: null,
     title: "Software Engineer",
     icon: "code",
     status: "active",

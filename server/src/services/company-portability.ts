@@ -46,6 +46,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  isAgentTier,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -2392,6 +2393,7 @@ const YAML_KEY_PRIORITY = [
   "includes",
   "requirements",
   "role",
+  "tier",
   "icon",
   "capabilities",
   "logoPath",
@@ -3209,6 +3211,7 @@ function buildManifestFromPackageFiles(
       path: agentPath,
       skills: readAgentSkillRefs(frontmatter),
       role: asString(extension.role) ?? asString(frontmatter.role) ?? "agent",
+      tier: isAgentTier(extension.tier) ? extension.tier : null,
       title,
       icon: asString(extension.icon),
       capabilities: asString(extension.capabilities),
@@ -4242,6 +4245,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         const extension = stripEmptyValues({
           role: agent.role !== "agent" ? agent.role : undefined,
+          tier: agent.tier ?? null,
           icon: agent.icon ?? null,
           capabilities: agent.capabilities ?? null,
           adapter: {
@@ -5575,6 +5579,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
+            tier: isAgentTier(manifestAgent.tier) ? manifestAgent.tier : null,
             title: manifestAgent.title,
             icon: manifestAgent.icon,
             capabilities: manifestAgent.capabilities,

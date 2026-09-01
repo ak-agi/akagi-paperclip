@@ -10,7 +10,7 @@ import type {
   EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, AGENT_TIERS, AGENT_TIER_LABELS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -1398,6 +1398,21 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 placeholder="e.g. VP of Engineering"
               />
             </Field>
+            <Field label="Tier" hint={help.tier}>
+              <select
+                data-testid="agent-tier-select"
+                className={inputClass}
+                value={eff("identity", "tier", props.agent.tier ?? "") ?? ""}
+                onChange={(event) => mark("identity", "tier", event.target.value || null)}
+              >
+                <option value="">No tier</option>
+                {AGENT_TIERS.map((tier) => (
+                  <option key={tier} value={tier}>
+                    {AGENT_TIER_LABELS[tier]}
+                  </option>
+                ))}
+              </select>
+            </Field>
             <Field label="Reports to" hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
@@ -1489,6 +1504,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             <Field label="Environment override">
               <div className="space-y-2">
                 <select
+                  data-testid="agent-environment-override-select"
                   className={inputClass}
                   value={currentDefaultEnvironmentId}
                   onChange={(event) => {

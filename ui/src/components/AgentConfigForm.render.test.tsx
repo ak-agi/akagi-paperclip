@@ -580,7 +580,7 @@ async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
 }
 
 async function selectEnvironment(container: HTMLElement, environmentId: string) {
-  const select = container.querySelector("select");
+  const select = container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
   await act(async () => {
     if (select) {
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
@@ -725,7 +725,36 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).not.toContain("Environment override");
-    expect(result.container.querySelector("select")).toBeNull();
+    expect(result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]')).toBeNull();
+  });
+
+  it("offers the tier selector and defaults it to no tier", async () => {
+    const result = await renderForm([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    ]);
+    roots.push(result.root);
+
+    const tierSelect = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-tier-select"]');
+    expect(tierSelect).toBeTruthy();
+    expect(tierSelect?.value).toBe("");
+    expect([...(tierSelect?.options ?? [])].map((option) => option.value)).toEqual([
+      "",
+      "principal",
+      "senior",
+      "mid",
+      "junior",
+    ]);
+  });
+
+  it("preselects the declared tier of the agent", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { tier: "senior" },
+    );
+    roots.push(result.root);
+
+    const tierSelect = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-tier-select"]');
+    expect(tierSelect?.value).toBe("senior");
   });
 
   it("keeps secret access out of the main Configuration content", async () => {
@@ -763,7 +792,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
 
     expect(text).toContain("Environment");
     expect(text).toContain("Environment override");
@@ -790,7 +819,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -812,7 +841,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("E2B · sandbox");
@@ -834,7 +863,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     const text = result.container.textContent ?? "";
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
 
     expect(text).toContain("Environment override");
     expect(selector?.textContent).toContain("Default: Local");
@@ -854,7 +883,7 @@ describe("AgentConfigForm environment selector", () => {
     ]);
     roots.push(result.root);
 
-    const selector = result.container.querySelector("select");
+    const selector = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
 
     expect(selector?.textContent).toContain("Default: Paperclip Computer");
     expect(selector?.textContent).toContain("Paperclip Computer");
@@ -1675,7 +1704,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     expect(findButton(result.container, "Log in")).toBeTruthy();
 
-    const select = result.container.querySelector("select");
+    const select = result.container.querySelector<HTMLSelectElement>('[data-testid="agent-environment-override-select"]');
     await act(async () => {
       if (select) {
         const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;

@@ -19,6 +19,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   getAgentWorkEligibility,
+  isAgentTier,
   isUuidLike,
   normalizeAgentApiKeyScope,
   normalizeAgentUrlKey,
@@ -59,6 +60,7 @@ function createToken() {
 const CONFIG_REVISION_FIELDS = [
   "name",
   "role",
+  "tier",
   "title",
   "icon",
   "reportsTo",
@@ -149,6 +151,7 @@ function buildConfigSnapshot(
   return {
     name: row.name,
     role: row.role,
+    tier: row.tier,
     title: row.title,
     icon: row.icon,
     reportsTo: row.reportsTo,
@@ -186,6 +189,9 @@ function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
   const patch: Partial<typeof agents.$inferInsert> = {};
   if (typeof payload.name === "string") patch.name = payload.name;
   if (typeof payload.role === "string") patch.role = payload.role;
+  if (Object.prototype.hasOwnProperty.call(payload, "tier")) {
+    patch.tier = isAgentTier(payload.tier) ? payload.tier : null;
+  }
   if (Object.prototype.hasOwnProperty.call(payload, "title")) {
     patch.title = typeof payload.title === "string" ? payload.title : null;
   }
@@ -262,6 +268,9 @@ function configPatchFromSnapshot(snapshot: unknown): Partial<typeof agents.$infe
   return {
     name: snapshot.name,
     role: snapshot.role,
+    // A revision captured before tiers existed has no `tier` key. Restoring it
+    // clears the tier, which is exactly the configuration that revision held.
+    tier: isAgentTier(snapshot.tier) ? snapshot.tier : null,
     title: typeof snapshot.title === "string" || snapshot.title === null ? snapshot.title : null,
     reportsTo:
       typeof snapshot.reportsTo === "string" || snapshot.reportsTo === null ? snapshot.reportsTo : null,

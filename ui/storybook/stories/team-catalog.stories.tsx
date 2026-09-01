@@ -46,6 +46,7 @@ function makeAgent(id: string, name: string, role: string): Agent {
     name,
     urlKey: name.toLowerCase().replace(/\s+/g, "-"),
     role: role as Agent["role"],
+    tier: null,
     title: null,
     icon: null,
     status: "active",

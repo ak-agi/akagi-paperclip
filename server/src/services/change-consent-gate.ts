@@ -4,7 +4,14 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import type { RequestConfirmationPayload, RequestConfirmationResult } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 
-export const AGENT_PROFILE_CHANGE_CONSENT_FIELDS = ["name", "role", "title", "capabilities"] as const;
+// `tier` sits with the other org-identity fields: it is the seniority half of
+// the role/tier pair, and a later wave binds it to the model lane an agent
+// runs on. An agent-authenticated caller must therefore not be able to
+// re-tier an existing agent -- itself or a peer -- without recorded human
+// consent. This list gates UPDATES only; agent creation is gated by
+// `agents:create` alone, exactly as it already is for `name`, `role`,
+// `title`, and `capabilities`.
+export const AGENT_PROFILE_CHANGE_CONSENT_FIELDS = ["name", "role", "tier", "title", "capabilities"] as const;
 
 type ConsumedRequestConfirmationResult = RequestConfirmationResult & {
   consumedAt?: string | null;

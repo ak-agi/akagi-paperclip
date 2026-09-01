@@ -633,6 +633,94 @@ describe("company portability", () => {
     ]);
   });
 
+  it("carries the agent tier through export and back in on import", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    agentSvc.list.mockResolvedValueOnce([
+      {
+        id: "agent-1",
+        name: "ClaudeCoder",
+        status: "idle",
+        role: "engineer",
+        tier: "senior",
+        title: "Software Engineer",
+        icon: "code",
+        reportsTo: null,
+        capabilities: "Writes code",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        budgetMonthlyCents: 0,
+        permissions: { canCreateAgents: false },
+        metadata: null,
+      },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(asTextFile(exported.files[".paperclip.yaml"])).toContain('tier: "senior"');
+    expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.tier).toBe("senior");
+
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      tier: input.tier,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      status: input.status,
+    }));
+
+    const importedFiles: Record<string, unknown> = {};
+    for (const [path, entry] of Object.entries(exported.files)) {
+      importedFiles[path] = entry;
+    }
+
+    await portability.importBundle({
+      source: { type: "inline", files: importedFiles as never },
+      include: {
+        company: false,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+      target: {
+        mode: "existing_company",
+        companyId: "company-1",
+      },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({ tier: "senior" }),
+    );
+  });
+
+  it("omits the tier from the export when no tier is declared", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: {
+        company: true,
+        agents: true,
+        projects: false,
+        issues: false,
+      },
+    });
+
+    expect(asTextFile(exported.files[".paperclip.yaml"])).not.toContain("tier:");
+    expect(exported.manifest.agents.find((agent) => agent.slug === "claudecoder")?.tier).toBeNull();
+  });
+
   it("exports hire approval policy only when approval is required", async () => {
     const portability = companyPortabilityService({} as any);
 

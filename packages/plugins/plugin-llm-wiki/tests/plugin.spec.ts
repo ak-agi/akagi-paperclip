@@ -480,6 +480,7 @@ function wikiMaintainerAgent(): Agent {
     name: "Wiki Maintainer",
     urlKey: "wiki-maintainer",
     role: "general",
+    tier: null,
     title: "LLM Wiki Maintainer",
     icon: "book-open",
     status: "idle",

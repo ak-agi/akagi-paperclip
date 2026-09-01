@@ -115,6 +115,7 @@ function createAgent(): Agent {
     companyId: "company-1",
     name: "Routine Agent",
     role: "engineer",
+    tier: null,
     title: null,
     status: "active",
     reportsTo: null,

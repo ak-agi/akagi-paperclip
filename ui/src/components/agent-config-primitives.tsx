@@ -23,6 +23,7 @@ export const help: Record<string, string> = {
   name: "Display name for this agent.",
   title: "Job title shown in the org chart.",
   role: "Organizational role. Determines position and capabilities.",
+  tier: "Seniority tier, independent of role. Leave it unset to keep the agent off the tier ladder.",
   reportsTo: "The agent this one reports to in the org hierarchy.",
   capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
   adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",

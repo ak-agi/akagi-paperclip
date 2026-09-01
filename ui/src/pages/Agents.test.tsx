@@ -119,6 +119,7 @@ function makeAgent(overrides: Partial<Agent>): Agent {
     name: "Alpha",
     urlKey: "alpha",
     role: "engineer",
+    tier: null,
     title: null,
     icon: null,
     status: "active",

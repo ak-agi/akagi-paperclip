@@ -215,6 +215,7 @@ export interface CompanyPortabilityAgentManifestEntry {
   path: string;
   skills: string[];
   role: string;
+  tier: string | null;
   title: string | null;
   icon: string | null;
   capabilities: string | null;

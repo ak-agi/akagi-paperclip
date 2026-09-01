@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { PERMISSION_KEYS } from "../constants.js";
+import { AGENT_TIERS, PERMISSION_KEYS } from "../constants.js";
 import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
@@ -75,6 +75,7 @@ export const portabilityAgentManifestEntrySchema = z.object({
   path: z.string().min(1),
   skills: z.array(z.string().min(1)).default([]),
   role: z.string().min(1),
+  tier: z.enum(AGENT_TIERS).nullable().default(null),
   title: z.string().nullable(),
   icon: z.string().nullable(),
   capabilities: z.string().nullable(),
