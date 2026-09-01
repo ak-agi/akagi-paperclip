@@ -50,6 +50,8 @@ const mockAgentService = vi.hoisted(() => ({
   updatePermissions: vi.fn(),
   getChainOfCommand: vi.fn(),
   resolveByReference: vi.fn(),
+  getConfigRevision: vi.fn(),
+  rollbackConfigRevision: vi.fn(),
 }));
 
 const mockBuiltInAgentService = vi.hoisted(() => ({
@@ -296,6 +298,8 @@ describe.sequential("agent permission routes", () => {
     mockAgentService.updatePermissions.mockReset();
     mockAgentService.getChainOfCommand.mockReset();
     mockAgentService.resolveByReference.mockReset();
+    mockAgentService.getConfigRevision.mockReset();
+    mockAgentService.rollbackConfigRevision.mockReset();
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
@@ -342,6 +346,7 @@ describe.sequential("agent permission routes", () => {
     });
     mockAgentService.update.mockResolvedValue(baseAgent);
     mockAgentService.updatePermissions.mockResolvedValue(baseAgent);
+    mockAgentService.rollbackConfigRevision.mockResolvedValue(baseAgent);
     mockBuiltInAgentService.ensureCompanyDefaultAgentGrants.mockResolvedValue(0);
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
@@ -1213,10 +1218,24 @@ describe.sequential("agent permission routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 
-  it("lets a board operator switch a work lane off", async () => {
+  it("lets a board operator switch a work lane off without dropping the other lanes", async () => {
+    // `PATCH` replaces `runtimeConfig` wholesale, so a partial lane map used to
+    // delete every lane it did not mention -- and an absent lane entry reads as
+    // ENABLED at dispatch, so a board CLI caller switching `senior` off
+    // silently switched `cheap`, `mid` and `junior` back ON. The board UI
+    // merges client-side and was safe; the API was not. The old test asserted
+    // the destructive shape as expected behaviour.
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       adapterType: "codex_local",
+      runtimeConfig: {
+        modelProfiles: {
+          cheap: { enabled: false },
+          senior: { enabled: true, adapterConfig: { model: "gpt-5.4" } },
+          mid: { enabled: false },
+          junior: { enabled: false },
+        },
+      },
     });
 
     const app = await createApp({
@@ -1227,22 +1246,310 @@ describe.sequential("agent permission routes", () => {
       companyIds: [companyId],
     });
 
-    const runtimeConfig = {
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: {
+          modelProfiles: {
+            senior: { enabled: false, adapterConfig: {} },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patched = mockAgentService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect((patched.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      cheap: { enabled: false },
+      senior: { enabled: false, adapterConfig: {} },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
+  // FINDING 1: omission is the attack. The guard used to scan the submitted
+  // payload for work lane KEYS, but `PATCH` replaces `runtimeConfig` wholesale,
+  // so a body that names no lane at all deleted every stored switch -- and an
+  // absent entry reads as ENABLED at dispatch. Both bodies below returned 200
+  // and reached `svc.update` with the lane entries gone.
+  const disabledWorkLaneAgent = {
+    ...baseAgent,
+    adapterType: "codex_local",
+    runtimeConfig: {
+      heartbeat: { enabled: true, maxConcurrentRuns: 1 },
       modelProfiles: {
-        senior: { enabled: false, adapterConfig: {} },
+        cheap: { enabled: false },
+        senior: { enabled: false },
+        mid: { enabled: false },
+        junior: { enabled: false },
       },
-    };
+    },
+  };
+
+  it("keeps every stored work lane off when an agent patches an empty runtimeConfig", async () => {
+    mockAgentService.getById.mockResolvedValue(disabledWorkLaneAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
       .patch(`/api/agents/${agentId}`)
-      .send({ runtimeConfig }));
+      .send({ runtimeConfig: {} }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockAgentService.update).toHaveBeenCalledWith(
+    const patched = mockAgentService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect((patched.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+      cheap: { enabled: false },
+      senior: { enabled: false },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
+  it("keeps every stored work lane off when an agent patches only the heartbeat", async () => {
+    mockAgentService.getById.mockResolvedValue(disabledWorkLaneAgent);
+
+    const app = await createApp({
+      type: "agent",
       agentId,
-      expect.objectContaining({ runtimeConfig }),
-      expect.anything(),
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 3 } } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patched = mockAgentService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    const runtimeConfig = patched.runtimeConfig as Record<string, unknown>;
+    expect(runtimeConfig.heartbeat).toEqual({ enabled: false, maxConcurrentRuns: 3 });
+    expect(runtimeConfig.modelProfiles).toEqual({
+      cheap: { enabled: false },
+      senior: { enabled: false },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
+  it("still blocks an agent that re-enables a stored-off work lane", async () => {
+    mockAgentService.getById.mockResolvedValue(disabledWorkLaneAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ runtimeConfig: { modelProfiles: { senior: { enabled: true } } } }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe("agent_work_model_profile_change_forbidden");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("blocks an agent that repoints a stored-off work lane at a costlier model", async () => {
+    mockAgentService.getById.mockResolvedValue(disabledWorkLaneAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: {
+          modelProfiles: { senior: { enabled: false, adapterConfig: { model: "gpt-5.4" } } },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  // FINDING 9: the guard never compared against the stored value, so a faithful
+  // read-modify-write echo -- which changes nothing -- was rejected.
+  it("allows an agent read-modify-write that echoes the stored work lanes unchanged", async () => {
+    mockAgentService.getById.mockResolvedValue(disabledWorkLaneAgent);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        runtimeConfig: {
+          heartbeat: { enabled: true, maxConcurrentRuns: 1 },
+          modelProfiles: {
+            cheap: { enabled: false },
+            senior: { enabled: false },
+            mid: { enabled: false },
+            junior: { enabled: false },
+          },
+        },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  });
+
+  // FINDING 4: the config-revision restore route ran `assertCanUpdateAgent`
+  // only, which is an unconditional self-allow for an agent editing its own
+  // config, and `configPatchFromSnapshot` restores `runtimeConfig` AND `tier`
+  // wholesale.
+  it("blocks an agent restoring a revision that re-enables a work lane", async () => {
+    mockAgentService.getById.mockResolvedValue(disabledWorkLaneAgent);
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "revision-1",
+      agentId,
+      afterConfig: {
+        ...disabledWorkLaneAgent,
+        runtimeConfig: {
+          modelProfiles: { senior: { enabled: true, adapterConfig: { model: "gpt-5.4" } } },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+      .send({}));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.code).toBe("agent_work_model_profile_change_forbidden");
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+
+  it("puts an agent revision restore that brings back a tier behind the profile consent gate", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...disabledWorkLaneAgent, tier: null });
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "revision-1",
+      agentId,
+      afterConfig: {
+        ...disabledWorkLaneAgent,
+        tier: "principal",
+        runtimeConfig: disabledWorkLaneAgent.runtimeConfig,
+      },
+    });
+    // The ordinary update check is a self-allow; only the consent gate denies.
+    mockAccessService.decide.mockImplementation(
+      async (input: { scope?: { requiresChangeGrant?: boolean } }) => ({
+        allowed: !input.scope?.requiresChangeGrant,
+        reason: input.scope?.requiresChangeGrant ? "deny_missing_grant" : "allow_self",
+        explanation: "Recorded human consent is required for this profile change",
+      }),
     );
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+      .send({}));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+
+  it("lets a board operator restore a revision that brings back a tier", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...disabledWorkLaneAgent, tier: null });
+    mockAgentService.getConfigRevision.mockResolvedValue({
+      id: "revision-1",
+      agentId,
+      afterConfig: {
+        ...disabledWorkLaneAgent,
+        tier: "principal",
+        runtimeConfig: disabledWorkLaneAgent.runtimeConfig,
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/agents/${agentId}/config-revisions/revision-1/rollback`)
+      .send({}));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.rollbackConfigRevision).toHaveBeenCalled();
+  });
+
+  it("seeds the work lanes off for an adapter that declares no model profiles", async () => {
+    const { registerServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({
+      type: "no_profile_adapter",
+      execute: async () => ({ exitCode: 0, signal: null, timedOut: false }),
+      testEnvironment: async () => ({
+        adapterType: "no_profile_adapter",
+        status: "pass",
+        checks: [],
+        testedAt: new Date(0).toISOString(),
+      }),
+      listModelProfiles: async () => [],
+    });
+
+    try {
+      const app = await createApp({
+        type: "board",
+        userId: "board-user",
+        source: "local_implicit",
+        isInstanceAdmin: true,
+        companyIds: [companyId],
+      });
+
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({
+          name: "Builder",
+          role: "engineer",
+          adapterType: "no_profile_adapter",
+          adapterConfig: {},
+        }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      const created = mockAgentService.create.mock.calls[0]?.[1] as Record<string, unknown>;
+      expect((created.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
+        senior: { enabled: false },
+        mid: { enabled: false },
+        junior: { enabled: false },
+      });
+    } finally {
+      unregisterServerAdapter("no_profile_adapter");
+    }
   });
 
   it("creates agents when optional adapter model profile discovery fails", async () => {
@@ -1288,6 +1595,12 @@ describe.sequential("agent permission routes", () => {
         }));
 
       expect(res.status, JSON.stringify(res.body)).toBe(201);
+      // FINDING 7: the work lane seed used to be conditional on the adapter
+      // declaring at least one model profile today. An adapter that declared
+      // none -- including one whose discovery fails, like this one -- seeded
+      // nothing, so every agent created under it gained all three work lanes
+      // the moment that adapter later declared `senior`. The seed is now
+      // adapter-independent.
       expect(mockAgentService.create).toHaveBeenCalledWith(
         companyId,
         expect.objectContaining({
@@ -1301,6 +1614,9 @@ describe.sequential("agent permission routes", () => {
                 enabled: true,
                 adapterConfig: {},
               },
+              senior: { enabled: false },
+              mid: { enabled: false },
+              junior: { enabled: false },
             },
           },
         }),

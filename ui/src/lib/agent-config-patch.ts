@@ -4,10 +4,16 @@ export interface AgentModelProfileOverlay {
   enabled?: boolean;
   adapterConfig?: Record<string, unknown>;
   /**
-   * Mark this lane for clearing. When true, the patch removes
-   * `runtimeConfig.modelProfiles.<lane>` instead of merging into it.
+   * Drop this lane's adapter-specific settings (a model id belongs to one
+   * adapter) WITHOUT touching its on/off switch.
+   *
+   * This used to delete the whole `runtimeConfig.modelProfiles.<lane>` entry.
+   * An absent entry reads as ENABLED at dispatch, so switching an agent's
+   * adapter type silently re-enabled every work lane the operator had turned
+   * off. The switch is the operator's cost control and is not adapter-specific,
+   * so it survives the adapter change; only `adapterConfig` is reset.
    */
-  cleared?: boolean;
+  resetAdapterConfig?: boolean;
 }
 
 export interface AgentConfigOverlay {
@@ -82,8 +88,19 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
 
       for (const [profileKey, profileOverlay] of modelProfileOverlayEntries) {
         const existingProfile = ((existingProfiles[profileKey] ?? {}) as Record<string, unknown>);
-        if (profileOverlay.cleared) {
-          delete nextProfiles[profileKey];
+        if (profileOverlay.resetAdapterConfig) {
+          // A lane the agent never had an entry for stays absent. Writing
+          // `{ enabled: true }` here would turn an implicit default into an
+          // explicit enable that the operator never asked for.
+          if (existingProfiles[profileKey] === undefined) {
+            delete nextProfiles[profileKey];
+            continue;
+          }
+          nextProfiles[profileKey] = {
+            ...existingProfile,
+            enabled: existingProfile.enabled !== false,
+            adapterConfig: {},
+          };
           continue;
         }
         const mergedAdapterConfig = {

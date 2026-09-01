@@ -46,6 +46,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  forceDisabledWorkModelProfiles,
   isAgentTier,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
@@ -63,7 +64,7 @@ import {
   issueCommentPresentationSchema,
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
-  WORK_MODEL_PROFILE_KEYS,
+  seedDisabledWorkModelProfiles,
 } from "@paperclipai/shared";
 import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
@@ -1319,20 +1320,21 @@ function disableImportedTimerHeartbeat(runtimeConfig: unknown) {
 
 // An absent runtime lane entry reads as ENABLED at dispatch, so an imported
 // agent would otherwise run whatever work lane a requester asks for, with no
-// operator decision anywhere. Import is the second create path, so it seeds
-// the same default the agent routes do: every work lane off unless the bundle
-// declares one. `cheap` is left exactly as the bundle declares it -- it is the
-// reserved status-only recovery lane, not a work lane.
-function disableImportedWorkModelProfiles(runtimeConfig: unknown) {
+// operator decision anywhere. `cheap` is left exactly as the bundle declares it
+// -- it is the reserved status-only recovery lane, not a work lane.
+//
+// `board_full` fills only the ABSENT lanes: a board operator vetted the bundle,
+// so a lane it declares is an operator decision. `agent_safe` FORCES every work
+// lane off: on that route the caller supplies the whole bundle, so filling only
+// the absent lanes is not a control at all -- a same-company CEO agent simply
+// declares `runtime.modelProfiles.senior: {enabled: true, adapterConfig:
+// {model: ...}}` in the manifest it posts and lands the lane enabled, on a
+// model it picked, with nothing board-vetted anywhere on the path.
+function disableImportedWorkModelProfiles(runtimeConfig: unknown, mode: ImportMode) {
   const next = clonePortableRecord(runtimeConfig) ?? {};
-  const modelProfiles = isPlainRecord(next.modelProfiles) ? { ...next.modelProfiles } : {};
-  for (const key of WORK_MODEL_PROFILE_KEYS) {
-    if (!Object.prototype.hasOwnProperty.call(modelProfiles, key)) {
-      modelProfiles[key] = { enabled: false };
-    }
-  }
-  next.modelProfiles = modelProfiles;
-  return next;
+  return mode === "agent_safe"
+    ? forceDisabledWorkModelProfiles(next)
+    : seedDisabledWorkModelProfiles(next);
 }
 
 function normalizePortableProjectWorkspaceExtension(
@@ -5598,7 +5600,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
-            tier: isAgentTier(manifestAgent.tier) ? manifestAgent.tier : null,
+            // Same reasoning as the work lanes: the `agent_safe` caller writes
+            // the manifest, and `tier` is the seniority field a later wave
+            // binds to a model lane, so an unvetted bundle must not be able to
+            // spawn a peer straight into `principal`. It matches the
+            // `agent_create_tier_forbidden` rule on the agent create routes --
+            // create untiered, then tier through the consent-gated PATCH.
+            tier: mode === "agent_safe"
+              ? null
+              : (isAgentTier(manifestAgent.tier) ? manifestAgent.tier : null),
             title: manifestAgent.title,
             icon: manifestAgent.icon,
             capabilities: manifestAgent.capabilities,
@@ -5607,6 +5617,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             adapterConfig: normalizedAdapter.adapterConfig,
             runtimeConfig: disableImportedWorkModelProfiles(
               disableImportedTimerHeartbeat(manifestAgent.runtimeConfig),
+              mode,
             ),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,

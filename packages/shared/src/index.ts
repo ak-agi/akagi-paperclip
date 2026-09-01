@@ -288,6 +288,15 @@ export {
   type SourceTrustMetadata,
 } from "./trust-policy.js";
 export {
+  changedWorkModelProfileKeys,
+  forceDisabledWorkModelProfiles,
+  mergeStoredModelProfiles,
+  readEffectiveModelProfile,
+  seedDisabledWorkModelProfiles,
+  writtenWorkModelProfileKeys,
+  type EffectiveModelProfileState,
+} from "./model-profile-governance.js";
+export {
   APP_STORE_DEFINITIONS,
   APP_STORE_HIDDEN_SLUGS,
   CONNECTABLE_APP_DEFINITIONS,

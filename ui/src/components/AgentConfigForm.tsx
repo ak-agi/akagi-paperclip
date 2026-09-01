@@ -1609,10 +1609,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     setOverlay((prev) => ({
                       ...prev,
                       adapterType: t,
-                      // Every lane is adapter-specific, so a new adapter clears
-                      // the whole ladder, not only the cheap lane.
+                      // A lane's MODEL is adapter-specific, so a new adapter
+                      // resets the whole ladder's adapter config -- but the
+                      // on/off switch is the operator's cost control and is not
+                      // adapter-specific, so it is preserved. Deleting the lane
+                      // entries here silently re-enabled every disabled work
+                      // lane, because an absent entry reads as enabled.
                       modelProfiles: Object.fromEntries(
-                        MODEL_PROFILE_KEYS.map((key) => [key, { cleared: true }]),
+                        MODEL_PROFILE_KEYS.map((key) => [key, { resetAdapterConfig: true }]),
                       ),
                       adapterConfig: {
                         model:

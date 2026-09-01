@@ -3606,6 +3606,102 @@ describe("company portability", () => {
     });
   });
 
+  // FINDING 2: the `agent_safe` company import bypassed both new 403 guards.
+  // The caller writes the bundle, so `tier` came straight off the manifest and
+  // `disableImportedWorkModelProfiles` filled only the ABSENT lanes -- a
+  // same-company CEO agent simply declared the lane it wanted, enabled, on the
+  // model it picked. Nothing on that path is board-vetted.
+  const escalatingBundleFiles = {
+    "COMPANY.md": [
+      "---",
+      "name: Import",
+      "includes:",
+      "  - agents/coder/AGENTS.md",
+      "---",
+      "",
+    ].join("\n"),
+    "agents/coder/AGENTS.md": [
+      "---",
+      "name: Coder",
+      "slug: coder",
+      "kind: agent",
+      "---",
+      "",
+      "# Coder",
+      "",
+    ].join("\n"),
+    ".paperclip.yaml": [
+      "schema: paperclip/v1",
+      "agents:",
+      "  coder:",
+      "    tier: principal",
+      "    adapter:",
+      "      type: codex_local",
+      "      config: {}",
+      "    runtime:",
+      "      modelProfiles:",
+      "        senior:",
+      "          enabled: true",
+      "          adapterConfig:",
+      "            model: claude-opus-4-6",
+      "",
+    ].join("\n"),
+  };
+
+  function escalatingImportInput() {
+    return {
+      source: { type: "inline" as const, files: { ...escalatingBundleFiles } },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company" as const, companyId: "company-1" },
+      collisionStrategy: "rename" as const,
+    };
+  }
+
+  it("forces every work lane off and drops the tier on an agent-safe import", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-coder",
+      name: input.name,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+    }));
+
+    await portability.importBundle(escalatingImportInput(), null, {
+      mode: "agent_safe",
+      sourceCompanyId: "company-1",
+    });
+
+    const created = agentSvc.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(created.tier).toBeNull();
+    expect((created.runtimeConfig as Record<string, unknown>).modelProfiles).toMatchObject({
+      senior: { enabled: false },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
+  it("keeps a board-vetted import free to declare a tier and an enabled work lane", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-coder",
+      name: input.name,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+    }));
+
+    await portability.importBundle(escalatingImportInput(), "user-1");
+
+    const created = agentSvc.create.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(created.tier).toBe("principal");
+    expect((created.runtimeConfig as Record<string, unknown>).modelProfiles).toMatchObject({
+      senior: { enabled: true, adapterConfig: { model: "claude-opus-4-6" } },
+      mid: { enabled: false },
+      junior: { enabled: false },
+    });
+  });
+
   it("imports only selected files and leaves unchecked company metadata alone", async () => {
     const portability = companyPortabilityService({} as any);
 
