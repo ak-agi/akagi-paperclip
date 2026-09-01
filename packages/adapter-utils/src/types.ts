@@ -2,6 +2,7 @@
 // Minimal adapter-facing interfaces (no drizzle dependency)
 // ---------------------------------------------------------------------------
 
+import type { ModelProfileKey } from "@paperclipai/shared";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import type { AdapterExecutionTarget } from "./execution-target.js";
 import type { RuntimeStatusSink } from "./runtime-progress.js";
@@ -229,7 +230,21 @@ export interface AdapterModel {
   label: string;
 }
 
-export type AdapterModelProfileKey = "cheap";
+/**
+ * Adapter-facing model profile lane key.
+ *
+ * Derived from the shared `MODEL_PROFILE_KEYS` constant rather than
+ * re-declaring the literals: `@paperclipai/adapter-utils` already depends on
+ * `@paperclipai/shared`, so a single source of truth is available across the
+ * package boundary and stops the two unions drifting apart.
+ *
+ * `cheap` is the recovery-only lane (status-only coordination; see
+ * `doc/execution-semantics.md` §9.3). `senior` / `mid` / `junior` are work
+ * lanes and may produce deliverable work. Adapters declare only the lanes they
+ * support; unsupported lanes degrade through the `adapter_profile_not_supported`
+ * fallback rather than failing the run.
+ */
+export type AdapterModelProfileKey = ModelProfileKey;
 
 export interface AdapterModelProfileDefinition {
   key: AdapterModelProfileKey;

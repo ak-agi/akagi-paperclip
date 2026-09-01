@@ -40,6 +40,21 @@ describe("buildAssigneeAdapterOverrides", () => {
     ).toEqual({ modelProfile: "cheap" });
   });
 
+  it.each(["senior", "mid", "junior"] as const)(
+    "%s work lane sends modelProfile=%s and no adapterConfig",
+    (lane) => {
+      expect(
+        buildAssigneeAdapterOverrides({
+          adapterType: "claude_local",
+          lane,
+          modelOverride: "ignored",
+          thinkingEffortOverride: "high",
+          chrome: true,
+        }),
+      ).toEqual({ modelProfile: lane });
+    },
+  );
+
   it("custom lane preserves explicit model + thinking effort + chrome overrides", () => {
     expect(
       buildAssigneeAdapterOverrides({

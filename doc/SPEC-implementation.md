@@ -1242,11 +1242,37 @@ Behavior:
 - `thin`: send IDs and pointers only; agent fetches context via API
 - `fat`: include current assignments, goal summary, budget snapshot, and recent comments
 
-## 11.5 Recovery Model Profiles
+## 11.5 Model Profile Lanes
+
+`MODEL_PROFILE_KEYS` is `["cheap", "senior", "mid", "junior"]`. It contains one recovery lane and three work lanes, and the two kinds have different rules.
+
+### 11.5.1 Recovery lane (`cheap`)
 
 The optional `modelProfiles.cheap` lane is not a retry worker lane. Paperclip may request the cheap profile only for status-only recovery coordination, and those wakes must include guard context that prevents deliverable work and document/plan updates (`allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`).
 
 Failed source-work retries, process-loss retries, transient/scheduled retries, max-turn continuations, source-assignee continuations, and downstream source-work child/requeue/resume contexts must use the normal/original model lane. If cheap recovery repairs liveness while actual work remains, the next live continuation path must be a separate normal-model worker run with cheap hints scrubbed.
+
+`cheap` keeps this meaning exactly. Adding work lanes does not widen it.
+
+### 11.5.2 Work lanes (`senior`, `mid`, `junior`)
+
+`senior`, `mid`, and `junior` are capability and cost tiers, ordered most to least capable. They **are permitted to do deliverable work**: repo file changes, issue documents, plans, work products, and attachments. They carry none of the `cheap` guard context, and a run on a work lane counts as a normal-model run wherever this spec requires one.
+
+Guard context, not the lane key, decides whether a run may produce deliverable work. The §11.5.1 guards (`recoveryIntent: "status_only"`, `allowDeliverableWork: false`, `allowDocumentUpdates: false`, `resumeRequiresNormalModel: true`) are what the write-path guards test; they are never inferred from `modelProfile`, because dispatch rewrites `contextSnapshot.modelProfile` to whichever lane wins resolution.
+
+### 11.5.3 Lane precedence, resolution and fallback
+
+Lane requests arrive from three sources, highest precedence first:
+
+1. A **status-only recovery wake context**. When the run context carries the §11.5.1 guards, its lane wins outright: a status-only recovery wake must not be lifted onto a work lane by an unrelated per-issue override.
+2. The per-task `assigneeAdapterOverrides.modelProfile` on the issue being worked (`requestedBy: "issue_override"`).
+3. A `modelProfile` on the wake itself (`requestedBy: "wake_context"`). `POST /agents/:id/wakeup` accepts an open `payload` record and `normalizeModelProfileWakeContext()` lifts `payload.modelProfile` into the run context when the context does not already carry one.
+
+Nothing selects a work lane automatically. There is no tier-driven or cost-driven automatic selection: a work lane is only ever reached because a caller named it, through source 2 or source 3. A later change binds agent tier to these lanes as the lowest-priority request source, below both.
+
+Adapters declare the lanes they support through the `modelProfiles` registry field, and a lane exists for an adapter only if that adapter opted in. Requesting a lane an adapter does not declare is not an error: `resolveModelProfileApplication()` returns `applied: null` with `fallbackReason: "adapter_profile_not_supported"` and the run continues on the agent's primary model. An agent may disable a declared lane through its runtime config, which yields `fallbackReason: "agent_runtime_profile_disabled"` with the same graceful degradation.
+
+A status-only recovery run may not pin a downstream issue to any lane. `POST /issues`, `POST /issues/:id/children` and `PATCH /issues/:id` reject an `assigneeAdapterOverrides.modelProfile` from a run whose context carries the §11.5.1 guards, for every lane and not only `cheap`.
 
 ## 11.6 Scheduler Rules
 

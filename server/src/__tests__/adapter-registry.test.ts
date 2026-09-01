@@ -258,20 +258,20 @@ describe("server adapter registry", () => {
   });
 
   it("built-in local adapters declare cheap model profile defaults where supported", async () => {
-    await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual([
+    await expect(listAdapterModelProfiles("claude_local")).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         key: "cheap",
         adapterConfig: expect.objectContaining({ model: "claude-sonnet-4-6" }),
         source: "adapter_default",
       }),
-    ]);
-    await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual([
+    ]));
+    await expect(listAdapterModelProfiles("codex_local")).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         key: "cheap",
         adapterConfig: {},
         source: "adapter_default",
       }),
-    ]);
+    ]));
     await expect(listAdapterModelProfiles("gemini_local")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
@@ -279,13 +279,13 @@ describe("server adapter registry", () => {
         source: "adapter_default",
       }),
     ]);
-    await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual([
+    await expect(listAdapterModelProfiles("opencode_local")).resolves.toEqual(expect.arrayContaining([
       expect.objectContaining({
         key: "cheap",
         adapterConfig: expect.objectContaining({ model: "openai/gpt-5.1-codex-mini" }),
         source: "adapter_default",
       }),
-    ]);
+    ]));
     await expect(listAdapterModelProfiles("cursor")).resolves.toEqual([
       expect.objectContaining({
         key: "cheap",
@@ -294,6 +294,19 @@ describe("server adapter registry", () => {
       }),
     ]);
     await expect(listAdapterModelProfiles("pi_local")).resolves.toEqual([]);
+  });
+
+  it("work lanes are opt-in per adapter, not implied by MODEL_PROFILE_KEYS", async () => {
+    // Widening MODEL_PROFILE_KEYS does not declare lanes on an adapter's
+    // behalf: only adapters that opted in expose senior/mid/junior.
+    for (const adapterType of ["claude_local", "codex_local", "opencode_local"] as const) {
+      const keys = (await listAdapterModelProfiles(adapterType)).map((profile) => profile.key);
+      expect(keys, adapterType).toEqual(expect.arrayContaining(["cheap", "senior", "mid", "junior"]));
+    }
+    for (const adapterType of ["gemini_local", "cursor"] as const) {
+      const keys = (await listAdapterModelProfiles(adapterType)).map((profile) => profile.key);
+      expect(keys, adapterType).toEqual(["cheap"]);
+    }
   });
 
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {

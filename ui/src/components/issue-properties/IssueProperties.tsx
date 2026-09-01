@@ -26,7 +26,15 @@ import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
-import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
+import {
+  ISSUE_MODEL_LANE_DISPLAY_ORDER,
+  ISSUE_MODEL_LANE_HINTS,
+  ISSUE_MODEL_LANE_LABELS,
+  ISSUE_OVERRIDE_ADAPTER_TYPES,
+  isIssueModelProfileLane,
+  isIssueRecoveryModelProfileLane,
+  type IssueModelLane,
+} from "../../lib/issue-assignee-overrides";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
@@ -304,6 +312,8 @@ export function IssueProperties({
   const [scheduledRetryOpen, setScheduledRetryOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [assigneeOptionsOpen, setAssigneeOptionsOpen] = useState(false);
+  // Purely presentational: reveals the lane chip row without writing a lane.
+  const [laneChipsOpen, setLaneChipsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   // token-extraction: allowlisted — color-picker seed state, persisted into label-create payload; a var() string would break that payload.
@@ -564,7 +574,7 @@ export function IssueProperties({
   const supportsAssigneeOverrides = Boolean(
     assigneeAdapterType && ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType),
   );
-  const assigneeSupportsCheapLane = Boolean(
+  const assigneeSupportsProfileLanes = Boolean(
     supportsAssigneeOverrides
       && (assigneeAdapterType === "claude_local"
         || assigneeAdapterType === "codex_local"
@@ -588,17 +598,29 @@ export function IssueProperties({
     queryFn: () => agentsApi.adapterModels(companyId!, assigneeAdapterType!),
     enabled: Boolean(companyId) && showAssigneeAdapterOptions && supportsAssigneeOverrides,
   });
-  const { data: assigneeCheapProfiles } = useQuery({
+  const { data: assigneeModelProfiles } = useQuery({
     queryKey: companyId && assigneeAdapterType
       ? queryKeys.agents.adapterModelProfiles(companyId, assigneeAdapterType)
       : ["agents", "none", "adapter-model-profiles", assigneeAdapterType ?? "none"],
     queryFn: () => agentsApi.adapterModelProfiles(companyId!, assigneeAdapterType!),
-    enabled: Boolean(companyId) && showAssigneeAdapterOptions && assigneeSupportsCheapLane,
+    enabled: Boolean(companyId) && showAssigneeAdapterOptions && assigneeSupportsProfileLanes,
   });
-  const assigneeCheapProfile = useMemo(
-    () => (assigneeCheapProfiles ?? []).find((profile) => profile.key === "cheap") ?? null,
-    [assigneeCheapProfiles],
+  const assigneeSelectedLaneProfile = useMemo(
+    () =>
+      (isIssueModelProfileLane(assigneeOverrideLane)
+        ? (assigneeModelProfiles ?? []).find((profile) => profile.key === assigneeOverrideLane)
+        : null) ?? null,
+    [assigneeModelProfiles, assigneeOverrideLane],
   );
+  const assigneeSelectedLaneModel =
+    assigneeSelectedLaneProfile
+    && typeof (assigneeSelectedLaneProfile.adapterConfig as Record<string, unknown> | undefined)?.model === "string"
+      ? String((assigneeSelectedLaneProfile.adapterConfig as Record<string, unknown>).model)
+      : null;
+  // The adapter profile list is only trustworthy once it has arrived. Until
+  // then "this adapter declares no <lane> profile" would be an assertion about
+  // data we do not have yet.
+  const assigneeModelProfilesUnresolved = assigneeModelProfiles === undefined;
   const modelOverrideOptions = useMemo<InlineEntityOption[]>(() => {
     const models = sortAdapterModels(assigneeAdapterModels ?? []);
     const options = models.map((model) => ({
@@ -650,11 +672,11 @@ export function IssueProperties({
       updateAssigneeAdapterOverrides(null);
       return;
     }
-    if (lane === "cheap") {
+    if (isIssueModelProfileLane(lane)) {
       updateAssigneeAdapterOverrides(
         compactRecord({
           useProjectWorkspace: assigneeAdapterOverrides?.useProjectWorkspace,
-          modelProfile: "cheap",
+          modelProfile: lane,
         }),
       );
       return;
@@ -662,8 +684,12 @@ export function IssueProperties({
     updateAssigneeAdapterOverrides(buildAssigneeOverrideWithConfig(assigneeOverrideAdapterConfig) ?? { adapterConfig: {} });
   };
   const assigneeOptionsTrigger = (() => {
-    if (assigneeOverrideLane === "cheap") {
-      return <span className="text-sm">Cheap model</span>;
+    if (isIssueModelProfileLane(assigneeOverrideLane)) {
+      return (
+        <span className="text-sm" title={ISSUE_MODEL_LANE_HINTS[assigneeOverrideLane]}>
+          {ISSUE_MODEL_LANE_LABELS[assigneeOverrideLane]} lane
+        </span>
+      );
     }
     if (assigneeOverrideLane === "custom") {
       const details = [
@@ -688,31 +714,77 @@ export function IssueProperties({
       <div className="space-y-1.5">
         <div className="text-xs text-muted-foreground">Model lane</div>
         <div className="flex w-full overflow-hidden rounded-md border border-border" role="radiogroup" aria-label="Model lane">
-          {(["primary", ...(assigneeSupportsCheapLane ? (["cheap"] as const) : ([] as const)), "custom"] as const).map((lane) => (
-            <button
-              key={lane}
-              type="button"
-              role="radio"
-              aria-checked={assigneeOverrideLane === lane}
-              className={cn(
-                "flex-1 px-2 py-1 text-xs capitalize transition-colors hover:bg-accent/40",
-                assigneeOverrideLane === lane && "bg-accent text-foreground",
-              )}
-              onClick={() => setAssigneeOverrideLane(lane)}
-            >
-              {lane === "primary" ? "Primary" : lane === "cheap" ? "Cheap" : "Override"}
-            </button>
-          ))}
+          {(["primary", ...(assigneeSupportsProfileLanes ? (["lane"] as const) : ([] as const)), "custom"] as const).map((group) => {
+            const selected = group === "lane"
+              ? isIssueModelProfileLane(assigneeOverrideLane) || laneChipsOpen
+              : assigneeOverrideLane === group && !laneChipsOpen;
+            return (
+              <button
+                key={group}
+                type="button"
+                role="radio"
+                aria-checked={selected}
+                className={cn(
+                  "flex-1 px-2 py-1 text-xs transition-colors hover:bg-accent/40",
+                  selected && "bg-accent text-foreground",
+                )}
+                onClick={() => {
+                  if (group === "lane") {
+                    // Opening the lane group only reveals the chip row. It must
+                    // not PATCH a lane onto the issue — otherwise merely looking
+                    // at the picker silently pins the task to a lane the
+                    // operator never chose.
+                    setLaneChipsOpen(true);
+                    return;
+                  }
+                  setLaneChipsOpen(false);
+                  setAssigneeOverrideLane(group);
+                }}
+              >
+                {group === "primary" ? "Primary" : group === "lane" ? "Lane" : "Override"}
+              </button>
+            );
+          })}
         </div>
-        {assigneeOverrideLane === "cheap" ? (
-          <p className="text-xs text-muted-foreground">
-            Sends <code>modelProfile: "cheap"</code>{" "}
-            {assigneeCheapProfile?.adapterConfig && typeof (assigneeCheapProfile.adapterConfig as Record<string, unknown>).model === "string"
-              ? <>· adapter default <code>{String((assigneeCheapProfile.adapterConfig as Record<string, unknown>).model)}</code></>
-              : assigneeCheapProfile
-                ? <>· uses the agent&apos;s configured cheap profile</>
-                : <>· falls back to the primary model if no cheap profile is configured</>}
-          </p>
+        {isIssueModelProfileLane(assigneeOverrideLane) || laneChipsOpen ? (
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5 flex-wrap" role="radiogroup" aria-label="Model profile lane">
+              {ISSUE_MODEL_LANE_DISPLAY_ORDER.map((lane) => (
+                <button
+                  key={lane}
+                  type="button"
+                  role="radio"
+                  aria-checked={assigneeOverrideLane === lane}
+                  title={ISSUE_MODEL_LANE_HINTS[lane]}
+                  className={cn(
+                    "px-2 py-1 rounded-md text-xs border border-border transition-colors hover:bg-accent/50",
+                    isIssueRecoveryModelProfileLane(lane) && "text-muted-foreground",
+                    assigneeOverrideLane === lane && "bg-accent text-foreground",
+                  )}
+                  onClick={() => setAssigneeOverrideLane(lane)}
+                >
+                  {ISSUE_MODEL_LANE_LABELS[lane]}
+                </button>
+              ))}
+            </div>
+            {isIssueModelProfileLane(assigneeOverrideLane) ? (
+              <p className="text-xs text-muted-foreground">
+                {ISSUE_MODEL_LANE_HINTS[assigneeOverrideLane]}{" "}
+                Sends <code>modelProfile: "{assigneeOverrideLane}"</code>{" "}
+                {assigneeSelectedLaneModel
+                  ? <>· adapter default <code>{assigneeSelectedLaneModel}</code></>
+                  : assigneeSelectedLaneProfile
+                    ? <>· uses the agent&apos;s configured {assigneeOverrideLane} profile</>
+                    : assigneeModelProfilesUnresolved
+                      ? <>· checking which lanes this adapter declares…</>
+                      : <>· this adapter declares no {assigneeOverrideLane} profile, so the run falls back to the primary model</>}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Pick a lane to set <code>modelProfile</code> on this task. Nothing is saved until you pick one.
+              </p>
+            )}
+          </div>
         ) : null}
         {assigneeOverrideLane === "custom" ? (
           <p className="text-xs text-muted-foreground">

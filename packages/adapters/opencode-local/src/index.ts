@@ -79,6 +79,37 @@ export const DEFAULT_OPENCODE_CHEAP_MODEL = "openai/gpt-5.1-codex-mini";
 // unguarded: in the browser (Vite dev middleware serves it untransformed)
 // a bare `process.env` throws ReferenceError at module load and takes the whole
 // app down. Guard with `typeof process` and fall back to an empty env.
+// Work lanes. Unlike `cheap` (the recovery lane, status-only per
+// doc/execution-semantics.md 9.3) these lanes may produce deliverable work, so
+// they carry no recovery guard context. Model ids come from the `models` list
+// above and effort is expressed with OpenCode's `variant` key. They are not
+// env-overridable: the cheap override exists because recovery must not fail on
+// a gateway that does not serve the codex-mini model, whereas an unsupported
+// work lane degrades through `adapter_profile_not_supported` instead.
+export const OPENCODE_WORK_MODEL_PROFILES: AdapterModelProfileDefinition[] = [
+  {
+    key: "senior",
+    label: "Senior",
+    description: "Top OpenCode work lane for hard or ambiguous tasks.",
+    adapterConfig: { model: "openai/gpt-5.5", variant: "medium" },
+    source: "adapter_default",
+  },
+  {
+    key: "mid",
+    label: "Mid",
+    description: "Mid-cost OpenCode work lane for ordinary well-specified tasks.",
+    adapterConfig: { model: "openai/gpt-5.4", variant: "medium" },
+    source: "adapter_default",
+  },
+  {
+    key: "junior",
+    label: "Junior",
+    description: "Low-cost OpenCode work lane for narrow, fully specified tasks.",
+    adapterConfig: { model: "openai/gpt-5.4-mini", variant: "low" },
+    source: "adapter_default",
+  },
+];
+
 export function buildOpenCodeModelProfiles(
   env: NodeJS.ProcessEnv = typeof process === "undefined" ? {} : process.env,
 ): AdapterModelProfileDefinition[] {
@@ -93,6 +124,7 @@ export function buildOpenCodeModelProfiles(
         : { model: DEFAULT_OPENCODE_CHEAP_MODEL, variant: "low" },
       source: "adapter_default",
     },
+    ...OPENCODE_WORK_MODEL_PROFILES,
   ];
 }
 
