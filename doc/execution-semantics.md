@@ -595,7 +595,9 @@ A status-only recovery run also may not pin a downstream issue to any lane — t
 
 Selecting a work lane on an adapter that does not declare it is not an error. Lane resolution records `fallbackReason: "adapter_profile_not_supported"` and the run proceeds on the agent's primary model.
 
-**Forward note (tier escalation).** A later change binds agent tier to the work lanes and lets a tier-limited agent escalate upward when it cannot proceed. That escalation inherits the context-scrubbing rule stated above rather than defining a new one: the failed reasoning chain must be scrubbed from the escalated context, and the higher tier re-specifies from the original task. The rule is stated once here and applies to both recovery hand-back and tier escalation.
+**Agent tier selects a work lane, and never the recovery lane.** `agents.tier` supplies the lowest-priority lane request (`requestedBy: "agent_tier"`, see `doc/SPEC-implementation.md` §11.5.4). It can only ever name a work lane — `cheap` is not expressible in the tier mapping — and a run context carrying the status-only guards suppresses the tier default outright, so a tiered agent's status-only recovery wake stays on the recovery lane with its guards armed. Both rules exist so that widening tier can never quietly widen §9.3.
+
+**Forward note (tier escalation).** A later change lets a tier-limited agent escalate upward when it cannot proceed. That escalation inherits the context-scrubbing rule stated above rather than defining a new one: the failed reasoning chain must be scrubbed from the escalated context, and the higher tier re-specifies from the original task. The rule is stated once here and applies to both recovery hand-back and tier escalation.
 
 ## 10. Startup and Periodic Reconciliation
 

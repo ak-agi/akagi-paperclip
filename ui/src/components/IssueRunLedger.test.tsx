@@ -565,6 +565,31 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("agent_runtime_profile_disabled");
   });
 
+  it("names the lane request source, including the agent tier default", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          runId: "run-tier-lane",
+          resultJson: {
+            modelProfile: {
+              requested: "junior",
+              requestedBy: "agent_tier",
+              applied: "junior",
+              configSource: "adapter_default",
+              fallbackReason: null,
+            },
+          },
+        }),
+      ],
+    });
+
+    const badge = Array.from(container.querySelectorAll("span[title]")).find((node) =>
+      (node.textContent ?? "").includes("Profile: junior"),
+    );
+    expect(badge).toBeTruthy();
+    expect(badge?.getAttribute("title")).toContain("Requested by: agent_tier");
+  });
+
   it("hides watchdog decision actions for known non-owner viewers", () => {
     const onWatchdogDecision = vi.fn();
     renderLedger({

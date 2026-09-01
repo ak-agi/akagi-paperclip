@@ -1262,13 +1262,32 @@ Guard context, not the lane key, decides whether a run may produce deliverable w
 
 ### 11.5.3 Lane precedence, resolution and fallback
 
-Lane requests arrive from three sources, highest precedence first:
+Lane requests arrive from four sources, highest precedence first:
 
 1. A **status-only recovery wake context**. When the run context carries the §11.5.1 guards, its lane wins outright: a status-only recovery wake must not be lifted onto a work lane by an unrelated per-issue override.
 2. The per-task `assigneeAdapterOverrides.modelProfile` on the issue being worked (`requestedBy: "issue_override"`).
 3. A `modelProfile` on the wake itself (`requestedBy: "wake_context"`). `POST /agents/:id/wakeup` accepts an open `payload` record and `normalizeModelProfileWakeContext()` lifts `payload.modelProfile` into the run context when the context does not already carry one.
+4. The **agent tier default lane** (`requestedBy: "agent_tier"`), from `agents.tier`. This is a default, not a decision: every explicit request above outranks it.
 
-Nothing selects a work lane automatically. There is no tier-driven or cost-driven automatic selection: a work lane is only ever reached because a caller named it, through source 2 or source 3. A later change binds agent tier to these lanes as the lowest-priority request source, below both.
+### 11.5.4 Agent tier default lane
+
+`agentTierModelProfile()` maps a tier to the lane it runs by default:
+
+| `agents.tier` | Lane | Effect |
+|---|---|---|
+| `principal` | *(none)* | the agent's configured primary model |
+| `senior` | `senior` | |
+| `mid` | `mid` | |
+| `junior` | `junior` | |
+| `null`, or any unknown value | *(none)* | the agent's configured primary model |
+
+Three rules bound this mapping:
+
+- **The ladder only reduces from primary.** A tier may move an agent onto a cheaper lane. It may never move it onto a more capable model than the one it is configured with, which is why `principal` maps to no lane rather than to a "top" lane.
+- **Tier can never reach the recovery lane.** The mapping's value type is `WorkModelProfileKey | null`, so `cheap` is not expressible. §11.5.1 stays the sole owner of that lane.
+- **A guarded status-only recovery context suppresses the tier default entirely.** The guards, not the lane key, define a status-only run, so the tier default is dropped whenever `isStatusOnlyRecoveryGuardContext()` holds — even in the case where such a context reaches resolution without a lane of its own. A tiered agent's status-only recovery wake therefore stays on the recovery lane and keeps its guards armed.
+
+Tier is the only automatic lane selection in Paperclip. There is still no cost-driven or classifier-driven routing: apart from the tier default, a work lane is only ever reached because a caller named it, through source 2 or source 3.
 
 Adapters declare the lanes they support through the `modelProfiles` registry field, and a lane exists for an adapter only if that adapter opted in. Requesting a lane an adapter does not declare is not an error: `resolveModelProfileApplication()` returns `applied: null` with `fallbackReason: "adapter_profile_not_supported"` and the run continues on the agent's primary model. An agent may disable a declared lane through its runtime config, which yields `fallbackReason: "agent_runtime_profile_disabled"` with the same graceful degradation.
 

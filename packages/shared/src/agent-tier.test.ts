@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_TIERS,
   AGENT_TIER_LABELS,
+  AGENT_TIER_MODEL_PROFILES,
   AGENT_TIER_RANKS,
+  RECOVERY_MODEL_PROFILE_KEY,
+  agentTierModelProfile,
   agentTierRank,
   isAgentTier,
+  isWorkModelProfileKey,
 } from "./constants.js";
 import { createAgentSchema, updateAgentSchema } from "./validators/agent.js";
 
@@ -93,5 +97,40 @@ describe("agent validators tier field", () => {
     expect(updateAgentSchema.parse({ tier: "junior" }).tier).toBe("junior");
     expect(updateAgentSchema.parse({ tier: null }).tier).toBeNull();
     expect(updateAgentSchema.safeParse({ tier: "intern" }).success).toBe(false);
+  });
+});
+
+describe("agentTierModelProfile", () => {
+  it("maps each work tier to the same-named work lane", () => {
+    expect(agentTierModelProfile("senior")).toBe("senior");
+    expect(agentTierModelProfile("mid")).toBe("mid");
+    expect(agentTierModelProfile("junior")).toBe("junior");
+  });
+
+  it("gives principal no lane, so it keeps its configured primary model", () => {
+    expect(agentTierModelProfile("principal")).toBeNull();
+    expect(AGENT_TIER_MODEL_PROFILES.principal).toBeNull();
+  });
+
+  it("gives an undeclared tier no lane", () => {
+    expect(agentTierModelProfile(null)).toBeNull();
+    expect(agentTierModelProfile(undefined)).toBeNull();
+  });
+
+  it("gives an unknown tier no lane instead of guessing one", () => {
+    expect(agentTierModelProfile("staff")).toBeNull();
+    expect(agentTierModelProfile("")).toBeNull();
+  });
+
+  it("never reaches the reserved recovery lane from any tier", () => {
+    for (const tier of AGENT_TIERS) {
+      const lane = agentTierModelProfile(tier);
+      expect(lane).not.toBe(RECOVERY_MODEL_PROFILE_KEY);
+      if (lane !== null) expect(isWorkModelProfileKey(lane)).toBe(true);
+    }
+  });
+
+  it("declares a lane for every tier in the taxonomy", () => {
+    expect(Object.keys(AGENT_TIER_MODEL_PROFILES).sort()).toEqual([...AGENT_TIERS].sort());
   });
 });

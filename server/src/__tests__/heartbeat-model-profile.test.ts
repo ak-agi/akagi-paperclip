@@ -13,6 +13,7 @@ import {
   isStatusOnlyRecoveryGuardContext,
   withRecoveryModelProfileHint,
 } from "../services/recovery/model-profile-hint.js";
+import { isWorkModelProfileKey } from "@paperclipai/shared";
 
 const cheapProfile: AdapterModelProfileDefinition = {
   key: "cheap",
@@ -383,6 +384,242 @@ describe("heartbeat model profile application", () => {
           contextSnapshot: { modelProfile: "junior" },
         }),
       ).toMatchObject({ requested: "senior", requestedBy: "issue_override", applied: "senior" });
+    });
+  });
+
+  describe("agent tier as the lowest-priority lane request", () => {
+    const laneProfiles: AdapterModelProfileDefinition[] = [
+      cheapProfile,
+      { key: "senior", label: "Senior", adapterConfig: { model: "adapter-senior" }, source: "adapter_default" },
+      { key: "mid", label: "Mid", adapterConfig: { model: "adapter-mid" }, source: "adapter_default" },
+      { key: "junior", label: "Junior", adapterConfig: { model: "adapter-junior" }, source: "adapter_default" },
+    ];
+
+    it.each([
+      ["senior", "senior"],
+      ["mid", "mid"],
+      ["junior", "junior"],
+    ] as const)("runs a %s-tier agent on the %s lane by default", (tier, lane) => {
+      const modelProfile = resolveModelProfileApplication({
+        adapterModelProfiles: laneProfiles,
+        agentRuntimeConfig: {},
+        issueModelProfile: null,
+        contextSnapshot: {},
+        agentTier: tier,
+      });
+
+      expect(modelProfile).toMatchObject({
+        requested: lane,
+        requestedBy: "agent_tier",
+        applied: lane,
+        configSource: "adapter_default",
+        fallbackReason: null,
+        adapterConfig: { model: `adapter-${lane}` },
+      });
+    });
+
+    it.each([["principal"], [null], [undefined]] as const)(
+      "leaves a %s-tier agent on its configured primary model",
+      (tier) => {
+        const modelProfile = resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: null,
+          contextSnapshot: {},
+          agentTier: tier,
+        });
+
+        // Byte-for-byte the pre-tier result: no request at all, so no run
+        // metadata and no adapter config patch.
+        expect(modelProfile).toEqual({
+          requested: null,
+          requestedBy: null,
+          applied: null,
+          configSource: null,
+          fallbackReason: null,
+          adapterConfig: null,
+        });
+        expect(
+          mergeModelProfileAdapterConfig({
+            baseConfig: { model: "primary", modelReasoningEffort: "high" },
+            modelProfile,
+            issueAdapterConfig: null,
+          }),
+        ).toEqual({ model: "primary", modelReasoningEffort: "high" });
+      },
+    );
+
+    it("never lifts an agent above its primary model: an unknown tier requests nothing", () => {
+      expect(
+        resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: null,
+          contextSnapshot: {},
+          agentTier: "staff",
+        }),
+      ).toMatchObject({ requested: null, requestedBy: null, applied: null });
+    });
+
+    it("lets an explicit per-issue override beat the agent tier", () => {
+      expect(
+        resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: "senior",
+          contextSnapshot: {},
+          agentTier: "junior",
+        }),
+      ).toMatchObject({
+        requested: "senior",
+        requestedBy: "issue_override",
+        applied: "senior",
+        adapterConfig: { model: "adapter-senior" },
+      });
+    });
+
+    it("lets an ordinary wake-context lane beat the agent tier", () => {
+      expect(
+        resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: null,
+          contextSnapshot: { modelProfile: "mid" },
+          agentTier: "junior",
+        }),
+      ).toMatchObject({
+        requested: "mid",
+        requestedBy: "wake_context",
+        applied: "mid",
+        adapterConfig: { model: "adapter-mid" },
+      });
+    });
+
+    it("degrades a tier lane the adapter does not declare instead of throwing", () => {
+      const modelProfile = resolveModelProfileApplication({
+        // Only the recovery lane is declared.
+        adapterModelProfiles: [cheapProfile],
+        agentRuntimeConfig: {},
+        issueModelProfile: null,
+        contextSnapshot: {},
+        agentTier: "junior",
+      });
+
+      expect(modelProfile).toMatchObject({
+        requested: "junior",
+        requestedBy: "agent_tier",
+        applied: null,
+        configSource: null,
+        fallbackReason: "adapter_profile_not_supported",
+        adapterConfig: null,
+      });
+      expect(
+        mergeModelProfileAdapterConfig({
+          baseConfig: { model: "primary" },
+          modelProfile,
+          issueAdapterConfig: null,
+        }),
+      ).toEqual({ model: "primary" });
+    });
+
+    it("honours an agent runtime disable of the tier lane", () => {
+      expect(
+        resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: { modelProfiles: { junior: { enabled: false } } },
+          issueModelProfile: null,
+          contextSnapshot: {},
+          agentTier: "junior",
+        }),
+      ).toMatchObject({
+        requested: "junior",
+        requestedBy: "agent_tier",
+        applied: null,
+        fallbackReason: "agent_runtime_profile_disabled",
+        adapterConfig: null,
+      });
+    });
+
+    // §9.3 / §11.5.1: a status-only recovery wake coordinates status and must
+    // never be lifted onto a work lane, and must never lose its guards.
+    const statusOnlyRecoveryContext = () =>
+      withRecoveryModelProfileHint(
+        { issueId: "22222222-2222-4222-8222-222222222222", wakeReason: "issue_monitor_recovery" },
+        "status_only",
+      ) as Record<string, unknown>;
+
+    it.each(["senior", "mid", "junior"] as const)(
+      "keeps a status-only recovery wake for a %s-tier agent off the work lanes and guarded",
+      (tier) => {
+        const context = statusOnlyRecoveryContext();
+        expect(isStatusOnlyRecoveryGuardContext(context)).toBe(true);
+
+        const modelProfile = resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: null,
+          contextSnapshot: context,
+          agentTier: tier,
+        });
+
+        expect(modelProfile).toMatchObject({
+          requested: "cheap",
+          requestedBy: "wake_context",
+          applied: "cheap",
+          adapterConfig: { model: "adapter-cheap" },
+        });
+        expect(isWorkModelProfileKey(modelProfile.applied)).toBe(false);
+
+        // Reproduce dispatch: it writes the winning lane back onto the context
+        // and persists that snapshot.
+        if (modelProfile.requested) context.modelProfile = modelProfile.requested;
+
+        expect(isStatusOnlyRecoveryGuardContext(context)).toBe(true);
+        expect(context).toMatchObject({
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        });
+      },
+    );
+
+    it("does not let a tier lane fill in for a guarded recovery context that carries no lane", () => {
+      // Defence in depth for the §21 bug pattern: the guards, not the lane key,
+      // define a status-only recovery run. If such a context ever reaches
+      // resolution without its lane, the tier default must not step in and turn
+      // an `allowDeliverableWork: false` run into a work-lane run.
+      const { modelProfile: _lane, ...guardedWithoutLane } = statusOnlyRecoveryContext();
+      expect(isStatusOnlyRecoveryGuardContext(guardedWithoutLane)).toBe(true);
+
+      expect(
+        resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: null,
+          contextSnapshot: guardedWithoutLane,
+          agentTier: "junior",
+        }),
+      ).toMatchObject({ requested: null, requestedBy: null, applied: null });
+    });
+
+    it("still applies the tier lane to an ordinary run that is not a guarded recovery wake", () => {
+      // Guard against the opposite over-correction: a normal-model recovery
+      // context is not status-only, so tier still applies there.
+      const context = withRecoveryModelProfileHint(
+        { issueId: "33333333-3333-4333-8333-333333333333" },
+        "normal_model",
+      ) as Record<string, unknown>;
+      expect(isStatusOnlyRecoveryGuardContext(context)).toBe(false);
+
+      expect(
+        resolveModelProfileApplication({
+          adapterModelProfiles: laneProfiles,
+          agentRuntimeConfig: {},
+          issueModelProfile: null,
+          contextSnapshot: context,
+          agentTier: "mid",
+        }),
+      ).toMatchObject({ requested: "mid", requestedBy: "agent_tier", applied: "mid" });
     });
   });
 
