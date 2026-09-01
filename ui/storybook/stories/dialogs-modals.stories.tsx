@@ -425,6 +425,7 @@ const HERMES_AGENT: Agent = {
   name: "HermesRouter",
   urlKey: "hermesrouter",
   role: "engineer",
+  tier: null,
   title: "Lightweight Routing",
   icon: "code",
   status: "idle",

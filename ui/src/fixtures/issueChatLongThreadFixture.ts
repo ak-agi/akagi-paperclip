@@ -26,6 +26,7 @@ function createAgent(id: string, name: string, icon: string, urlKey: string): Ag
     name,
     urlKey,
     role: "engineer",
+    tier: null,
     title: null,
     icon,
     status: "active",

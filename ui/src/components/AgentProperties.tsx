@@ -9,13 +9,14 @@ import { AgentStatusBadge } from "./StatusBadge";
 import { Identity } from "./Identity";
 import { formatDate, agentUrl } from "../lib/utils";
 import { Separator } from "@/components/ui/separator";
+import { agentTierLabel } from "../lib/agent-tier";
+
+const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 interface AgentPropertiesProps {
   agent: Agent;
   runtimeState?: AgentRuntimeState;
 }
-
-const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
 
 function PropertyRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -54,6 +55,11 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
         <PropertyRow label="Role">
           <span className="text-sm">{roleLabels[agent.role] ?? agent.role}</span>
         </PropertyRow>
+        {agentTierLabel(agent.tier) && (
+          <PropertyRow label="Tier">
+            <span className="text-sm">{agentTierLabel(agent.tier)}</span>
+          </PropertyRow>
+        )}
         {agent.title && (
           <PropertyRow label="Title">
             <span className="text-sm">{agent.title}</span>

@@ -18,6 +18,10 @@ export const agents = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id),
     name: text("name").notNull(),
     role: text("role").notNull().default("general"),
+    // Seniority tier, orthogonal to `role`. Nullable with no default: `null`
+    // means "no tier declared" and behaves exactly as an untiered agent does
+    // today, so existing rows are unaffected.
+    tier: text("tier"),
     title: text("title"),
     icon: text("icon"),
     status: text("status").notNull().default("idle"),

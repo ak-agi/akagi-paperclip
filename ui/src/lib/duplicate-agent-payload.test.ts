@@ -9,6 +9,7 @@ const baseAgent: AgentDetail = {
   name: "Senior Product Engineer",
   urlKey: "senior-product-engineer",
   role: "engineer",
+  tier: null,
   title: "Senior Product Engineer",
   icon: "code",
   status: "idle",
@@ -47,6 +48,11 @@ const baseAgent: AgentDetail = {
 };
 
 describe("duplicate agent payload", () => {
+  it("copies a declared tier and omits an undeclared one", () => {
+    expect(buildDuplicateAgentPayload(baseAgent).tier).toBeUndefined();
+    expect(buildDuplicateAgentPayload({ ...baseAgent, tier: "senior" }).tier).toBe("senior");
+  });
+
   it("suffixes duplicate names", () => {
     expect(duplicateAgentName("Senior Product Engineer")).toBe("Senior Product Engineer Copy");
     expect(duplicateAgentName("   ")).toBe("Agent Copy");

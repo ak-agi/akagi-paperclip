@@ -1,5 +1,6 @@
 import type {
   AgentAdapterType,
+  AgentTier,
   ModelProfileKey,
   PauseReason,
   AgentRole,
@@ -85,6 +86,8 @@ export interface Agent {
   name: string;
   urlKey: string;
   role: AgentRole;
+  /** Seniority tier. `null` means no tier is declared. */
+  tier: AgentTier | null;
   title: string | null;
   icon: string | null;
   status: AgentStatus;

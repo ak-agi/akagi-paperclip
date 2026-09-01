@@ -72,6 +72,7 @@ function buildAgent(agentId: string, desiredSkills: string[]): Agent {
     name: "ACPX Claude",
     urlKey: "acpx-claude-edge",
     role: "engineer",
+    tier: null,
     title: "ACPX Claude agent",
     icon: "code",
     status: "idle",
