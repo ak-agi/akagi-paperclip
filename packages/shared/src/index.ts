@@ -96,6 +96,7 @@ export {
   type AgentInvalidOrgChainAncestor,
   type AgentOrgChainEntry,
   type AgentOrgChainHealth,
+  type AgentOrgChainInput,
   type AgentOrgChainInvalidReason,
   type AgentWorkEligibility,
 } from "./agent-eligibility.js";

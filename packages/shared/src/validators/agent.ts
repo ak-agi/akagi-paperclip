@@ -71,7 +71,12 @@ export const agentRuntimeConfigSchema = z.object({
 }).catchall(z.unknown());
 
 export const createAgentSchema = z.object({
-  name: z.string().min(1),
+  // Bounded on purpose. Agent names are rendered back into per-run prompts
+  // (the derived delegation context names an agent's manager and reports on
+  // every wake), so an unbounded name is a cost amplifier paid by every other
+  // agent in the reporting chain. The render path clamps far shorter still;
+  // this is the outer bound on what can be stored at all.
+  name: z.string().min(1).max(200),
   role: z.enum(AGENT_ROLES).optional().default("general"),
   // Seniority tier. Optional and nullable: omitting it or sending `null`
   // declares no tier, which is the pre-existing behaviour for every agent.
