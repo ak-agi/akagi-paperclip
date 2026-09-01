@@ -1083,8 +1083,47 @@ Allowed states are `joined` and `left`. Endpoints require a concrete board user 
 - `GET /companies/:companyId/costs/summary`
 - `GET /companies/:companyId/costs/by-agent`
 - `GET /companies/:companyId/costs/by-project`
+- `GET /companies/:companyId/costs/routing`
 - `PATCH /companies/:companyId/budgets`
 - `PATCH /agents/:agentId/budgets`
+
+`costs/routing` is a read-only orchestration-overhead report. It classifies each
+cost-bearing heartbeat run as an **execution run** (it created an issue work
+product or a document revision) or an **orchestration run** (it only created
+child issues, commented, or reassigned), then aggregates per root issue tree
+(walk of `issues.parent_id` from each cost-bearing issue up to its root) and per
+delegation depth (`issues.request_depth`). Two exclusions are mandatory in every
+cost comparison:
+
+- rows with `cost_status = 'unpriced'` are excluded from all cent sums, because
+  Paperclip has no model price table and those rows would bias every ratio to zero
+- rows with `billing_type = 'subscription_included'` are excluded from all cent
+  sums, because they report near-zero marginal cost; their tokens are still
+  counted, because quota rather than dollars is their scarce resource
+
+Because those exclusions zero a row's cents while keeping its tokens, no single
+unit covers a group that mixes priced and held-out rows. Every grain therefore
+ships a `basis`:
+
+- `cents` — every row is priced and metered; the cent sums cover all of the work
+- `tokens` — the group has no priced spend at all, so tokens are the only unit
+- `indeterminate` — priced and held-out rows are mixed, so no verdict is issued
+
+Ratios are orchestration's share of **classified** spend
+(`orchestration / (orchestration + execution)`), so the ratio and the inversion
+verdict can never disagree. Each tree carries an `overheadVerdict` of `inverted`,
+`balanced`, `in_flight` (the tree still has open work), `below_floor` (it has not
+spent enough to judge), or `indeterminate`.
+
+The report also carries a full `exclusions` block. Every company cost event in
+range is either counted or attributed to exactly one drop reason — `no_issue`,
+`no_run`, `unresolved_issue`, or `hidden_tree` — so the difference between this
+report and the unfiltered `costs/summary` total is always explainable. Hidden
+issue trees are routinely non-empty: status cards and summary slots create
+hidden, agent-executed, cost-bearing issues by design.
+
+The governing invariant is that a settled issue tree whose orchestration cost
+exceeds its execution cost is a bug.
 
 ## 10.9 Activity and Dashboard
 

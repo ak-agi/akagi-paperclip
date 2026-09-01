@@ -87,6 +87,51 @@ const mockCostService = vi.hoisted(() => ({
   windowSpend: vi.fn().mockResolvedValue([]),
   byProject: vi.fn().mockResolvedValue([]),
 }));
+const mockOrchestrationCostService = vi.hoisted(() => ({
+  report: vi.fn().mockResolvedValue({
+    summary: {
+      companyId: "company-1",
+      issueCount: 0,
+      treeCount: 0,
+      judgedTreeCount: 0,
+      invertedTreeCount: 0,
+      exclusions: {
+        totalEventCount: 0,
+        totalCostCents: 0,
+        countedEventCount: 0,
+        countedCostCents: 0,
+        heldOutCostCents: 0,
+        noIssueEventCount: 0,
+        noIssueCostCents: 0,
+        noRunEventCount: 0,
+        noRunCostCents: 0,
+        unresolvedIssueEventCount: 0,
+        unresolvedIssueCostCents: 0,
+        hiddenTreeEventCount: 0,
+        hiddenTreeCostCents: 0,
+      },
+      orchestrationRunCount: 0,
+      executionRunCount: 0,
+      unclassifiedRunCount: 0,
+      orchestrationCents: 0,
+      executionCents: 0,
+      unclassifiedCents: 0,
+      totalCents: 0,
+      orchestrationTokens: 0,
+      executionTokens: 0,
+      unclassifiedTokens: 0,
+      totalTokens: 0,
+      orchestrationCostRatio: null,
+      orchestrationTokenRatio: null,
+      unpricedEventCount: 0,
+      subscriptionEventCount: 0,
+      basis: "indeterminate",
+    },
+    trees: [],
+    byDepth: [],
+    thresholds: { minClassifiedCents: 100, minClassifiedTokens: 1_000_000 },
+  }),
+}));
 const mockFinanceService = vi.hoisted(() => ({
   createEvent: vi.fn(),
   summary: vi.fn().mockResolvedValue({ debitCents: 0, creditCents: 0, netCents: 0, estimatedDebitCents: 0, eventCount: 0 }),
@@ -115,6 +160,7 @@ function registerModuleMocks() {
     accessService: () => mockAccessService,
     budgetService: () => mockBudgetService,
     costService: () => mockCostService,
+    orchestrationCostService: () => mockOrchestrationCostService,
     financeService: () => mockFinanceService,
     companyService: () => mockCompanyService,
     agentService: () => mockAgentService,
@@ -266,6 +312,76 @@ describe("cost routes", () => {
       runCount: 0,
       runtimeMs: 0,
     });
+  });
+
+  it("returns the orchestration routing report for authorized company actors", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/routing")
+      .query({ from: "2026-02-01T00:00:00.000Z", to: "2026-02-28T23:59:59.999Z", limit: "10" });
+
+    expect(res.status).toBe(200);
+    expect(mockOrchestrationCostService.report).toHaveBeenCalledWith(
+      "company-1",
+      {
+        from: new Date("2026-02-01T00:00:00.000Z"),
+        to: new Date("2026-02-28T23:59:59.999Z"),
+      },
+      { limit: 10 },
+    );
+    expect(res.body.summary.companyId).toBe("company-1");
+    expect(res.body.trees).toEqual([]);
+    expect(res.body.byDepth).toEqual([]);
+  });
+
+  it("passes an undefined routing limit through when the query omits it", async () => {
+    const app = createApp();
+    const res = await request(app).get("/api/companies/company-1/costs/routing");
+
+    expect(res.status).toBe(200);
+    expect(mockOrchestrationCostService.report).toHaveBeenCalledWith("company-1", undefined, {
+      limit: undefined,
+    });
+  });
+
+  it("returns 400 for an invalid routing tree limit", async () => {
+    const app = createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/costs/routing")
+      .query({ limit: "9000" });
+
+    expect(res.status).toBe(400);
+    expect(mockOrchestrationCostService.report).not.toHaveBeenCalled();
+  });
+
+  it("rejects the routing report for board users outside the company", async () => {
+    const app = createAppWithActor({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["company-2"],
+    });
+
+    const res = await request(app).get("/api/companies/company-1/costs/routing");
+
+    expect(res.status).toBe(403);
+    expect(mockOrchestrationCostService.report).not.toHaveBeenCalled();
+  });
+
+  it("rejects the routing report when the access decision denies company scope reads", async () => {
+    mockAccessService.decide.mockResolvedValue({
+      allowed: false,
+      action: "company_scope:read",
+      reason: "deny_test",
+      explanation: "Denied by test mock.",
+    });
+    const app = createApp();
+
+    const res = await request(app).get("/api/companies/company-1/costs/routing");
+
+    expect(res.status).toBe(403);
+    expect(mockOrchestrationCostService.report).not.toHaveBeenCalled();
   });
 
   it("returns 400 for invalid finance event list limits", async () => {

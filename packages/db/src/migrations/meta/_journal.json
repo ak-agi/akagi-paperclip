@@ -1632,6 +1632,13 @@
       "when": 1788204275032,
       "tag": "0234_fluffy_mandarin",
       "breakpoints": true
+    },
+    {
+      "idx": 235,
+      "version": "7",
+      "when": 1788287257163,
+      "tag": "0235_tricky_mariko_yashida",
+      "breakpoints": true
     }
   ]
 }

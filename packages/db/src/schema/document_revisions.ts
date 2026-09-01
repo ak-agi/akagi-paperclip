@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { pgTable, uuid, text, integer, timestamp, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -30,5 +31,9 @@ export const documentRevisions = pgTable(
       table.documentId,
       table.createdAt,
     ),
+    // run -> revision lookup for the orchestration cost read model
+    companyCreatedByRunIdx: index("document_revisions_company_created_by_run_idx")
+      .on(table.companyId, table.createdByRunId)
+      .where(sql`${table.createdByRunId} is not null`),
   }),
 );

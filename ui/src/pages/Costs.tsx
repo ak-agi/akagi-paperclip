@@ -16,6 +16,7 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { CostRoutingCard } from "../components/CostRoutingCard";
 import { EmptyState } from "../components/EmptyState";
 import { FinanceBillerCard } from "../components/FinanceBillerCard";
 import { FinanceKindCard } from "../components/FinanceKindCard";
@@ -152,7 +153,9 @@ export function Costs() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
-  const [mainTab, setMainTab] = useState<"overview" | "budgets" | "providers" | "billers" | "finance">("overview");
+  const [mainTab, setMainTab] = useState<
+    "overview" | "budgets" | "providers" | "billers" | "routing" | "finance"
+  >("overview");
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
 
@@ -343,6 +346,19 @@ export function Costs() {
     enabled: !!selectedCompanyId && mainTab === "providers",
     refetchInterval: 300_000,
     staleTime: 60_000,
+  });
+
+  // routing read model: orchestration vs execution cost per issue tree.
+  // gated on the tab so the recursive tree walk only runs when it is on screen.
+  const {
+    data: routingData,
+    isLoading: routingLoading,
+    error: routingError,
+  } = useQuery({
+    queryKey: queryKeys.costRouting(companyId, from || undefined, to || undefined, 25),
+    queryFn: () => costsApi.routing(companyId, from || undefined, to || undefined, 25),
+    enabled: !!selectedCompanyId && customReady && mainTab === "routing",
+    staleTime: 30_000,
   });
 
   const byProvider = useMemo(() => {
@@ -658,6 +674,7 @@ export function Costs() {
           <TabsTrigger value="budgets">Budgets</TabsTrigger>
           <TabsTrigger value="providers">Providers</TabsTrigger>
           <TabsTrigger value="billers">Billers</TabsTrigger>
+          <TabsTrigger value="routing">Routing</TabsTrigger>
           <TabsTrigger value="finance">Finance</TabsTrigger>
         </TabsList>
 
@@ -1101,6 +1118,18 @@ export function Costs() {
               </Tabs>
             </>
           )}
+        </TabsContent>
+
+        <TabsContent value="routing" className="mt-4 space-y-4">
+          {showCustomPrompt ? (
+            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+          ) : routingLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : routingError ? (
+            <p className="text-sm text-destructive">{(routingError as Error).message}</p>
+          ) : routingData ? (
+            <CostRoutingCard report={routingData} />
+          ) : null}
         </TabsContent>
 
         <TabsContent value="finance" className="mt-4 space-y-4">
