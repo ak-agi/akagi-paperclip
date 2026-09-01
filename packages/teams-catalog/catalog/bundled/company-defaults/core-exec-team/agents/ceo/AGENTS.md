@@ -15,7 +15,7 @@ When you wake up, follow the Paperclip skill — it contains the full heartbeat 
 
 ## Delegation
 
-You MUST delegate work rather than doing it yourself. When a task is assigned to you:
+Implementation work belongs to your reports, not to you. When a task is assigned to you:
 
 1. Triage the task using the `issue-triage` skill.
 2. Plan it with the `task-planning` skill when scope is unclear or the work spans multiple deliverables.
@@ -23,7 +23,7 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
    - Route by the `Delegation context` block that Paperclip adds to your task context on each wake. It is generated from the live org chart and lists your real direct reports with role, tier, and budget headroom.
    - Anything cross-functional → break into subtasks for each owner, or keep it whole and give it to the report whose role covers most of it.
 4. If a report does not exist, use the `paperclip-create-agent` skill to hire one before delegating.
-5. Never write code, implement features, or fix bugs yourself. Even small or quick tasks get delegated.
+5. Never write code, implement features, or fix bugs yourself. For work that is not implementation, follow the delegate-or-do rule in the `Delegation context` block rather than delegating by reflex: each delegation is another full agent run, so a hop you do not need costs more than it saves.
 6. Follow up — if a delegated task is blocked or stale, check in via a comment or reassign.
 
 ## What you do personally

@@ -207,8 +207,11 @@ Delegation guidance is generated per run from the live org chart, not written in
 Rules the block must keep:
 
 - **Company-scoped.** Only agents of the same company are read or named.
-- **Eligibility.** Only agents that are both assignable and invokable are offered, so terminated, paused, and pending-approval agents never appear. Other direct reports are counted, never named.
+- **Eligibility.** Only agents that are both assignable and invokable are offered, so terminated, paused, and pending-approval agents never appear. Still-existing but currently unusable reports (paused, pending approval, broken reporting chain) are counted, never named; terminated reports are not counted at all, because that count would only ever grow.
 - **No implied tier.** `agents.tier` is nullable. A missing tier is reported as "tier not set"; it is never inferred from role or org depth.
+- **Names are labels, not instructions.** `agents.name` is operator-supplied free text that another agent can set through the agent API. Every name interpolated into the block is flattened (control characters and line breaks become spaces) and length-clamped, so a name can never forge a line of guidance in a block the model reads as platform-authored. The block's heading states this provenance rather than claiming the whole block is not user input.
+- **Stable between wakes.** Reports are read in a deterministic order and capped, so the same org chart renders the same named subset every time; a report is never delegable on one wake and unlisted on the next. When the list is capped, the block says how to reach the rest instead of forbidding it.
+- **Cost-bounded.** The feature exists to reduce cost, so the block must not become the cost. A leaf agent gets the escalation rule and nothing else. Budget headroom renders only when it is nearly exhausted, which also keeps the block byte-identical across wakes so it can be prompt-cached. The compact resume variant drops the delegate-or-do rule the session already read and keeps only what a reorg can change: the roster and the escalation owner.
 
 The block is regenerated on every wake, so a reorg reaches the next run with no instruction-file edit.
 

@@ -123,11 +123,22 @@ function buildRepairGuidance(
   ].join(" ");
 }
 
-export function getAgentOrgChainHealth(input: {
+export interface AgentOrgChainInput {
   agent: AgentEligibilityAgent;
   agents: AgentEligibilityAgent[];
-}): AgentOrgChainHealth {
-  const byId = new Map(input.agents.map((agent) => [agent.id, agent]));
+  /**
+   * Optional pre-built id index over `agents`. Callers that evaluate many
+   * agents against the same roster (the delegation context builds one block
+   * per direct report plus one for the manager) would otherwise rebuild this
+   * map once per call, which is O(reports x company size) per wake. Passing
+   * the map in makes the sweep linear in the roster instead. When omitted the
+   * map is built from `agents`, so every existing caller is unaffected.
+   */
+  agentsById?: ReadonlyMap<string, AgentEligibilityAgent>;
+}
+
+export function getAgentOrgChainHealth(input: AgentOrgChainInput): AgentOrgChainHealth {
+  const byId = input.agentsById ?? new Map(input.agents.map((agent) => [agent.id, agent]));
   const fullChain: AgentOrgChainEntry[] = [chainEntry(input.agent, 0, "self")];
   const invalidAncestors: AgentInvalidOrgChainAncestor[] = [];
   const pausedAncestors: AgentInvalidOrgChainAncestor[] = [];
@@ -220,10 +231,7 @@ export function getAgentOrgChainHealth(input: {
   };
 }
 
-export function getAgentWorkEligibility(input: {
-  agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgent[];
-}): AgentWorkEligibility {
+export function getAgentWorkEligibility(input: AgentOrgChainInput): AgentWorkEligibility {
   const orgChainHealth = getAgentOrgChainHealth(input);
   const assignabilityReason: AgentEligibilityLifecycleReason = !isAgentStatusAssignableToWork(input.agent.status)
     ? input.agent.status === "terminated"
@@ -255,16 +263,10 @@ export function getAgentWorkEligibility(input: {
   };
 }
 
-export function isAgentAssignableToWork(input: {
-  agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgent[];
-}): boolean {
+export function isAgentAssignableToWork(input: AgentOrgChainInput): boolean {
   return getAgentWorkEligibility(input).assignable;
 }
 
-export function isAgentInvokable(input: {
-  agent: AgentEligibilityAgent;
-  agents: AgentEligibilityAgent[];
-}): boolean {
+export function isAgentInvokable(input: AgentOrgChainInput): boolean {
   return getAgentWorkEligibility(input).invokable;
 }
