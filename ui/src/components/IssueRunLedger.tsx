@@ -167,6 +167,7 @@ function readString(value: unknown) {
 
 interface ModelProfileSummary {
   requested: string;
+  requestedBy: string | null;
   applied: string | null;
   configSource: string | null;
   fallbackReason: string | null;
@@ -180,6 +181,7 @@ function modelProfileForRun(run: RunForIssue): ModelProfileSummary | null {
   if (!requested) return null;
   return {
     requested,
+    requestedBy: readString(profile.requestedBy),
     applied: readString(profile.applied),
     configSource: readString(profile.configSource),
     fallbackReason: readString(profile.fallbackReason),
@@ -198,6 +200,9 @@ function modelProfileBadgeTone(summary: ModelProfileSummary) {
 
 function modelProfileTitle(summary: ModelProfileSummary) {
   const lines = [`Requested: ${summary.requested}`];
+  // Which source asked for the lane: an explicit per-task override, the wake
+  // itself, or the assignee's tier default.
+  if (summary.requestedBy) lines.push(`Requested by: ${summary.requestedBy}`);
   if (summary.applied) lines.push(`Applied: ${summary.applied}`);
   if (summary.configSource) lines.push(`Source: ${summary.configSource}`);
   if (summary.fallbackReason) lines.push(`Fallback: ${summary.fallbackReason}`);

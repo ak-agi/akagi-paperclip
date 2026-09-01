@@ -153,6 +153,36 @@ export function isWorkModelProfileKey(value: unknown): value is WorkModelProfile
   return WORK_MODEL_PROFILE_KEYS.includes(value as WorkModelProfileKey);
 }
 
+// Default work lane for each agent tier — the lowest-priority lane request
+// source (see `doc/SPEC-implementation.md` §11.5.3).
+//
+// Two invariants are load-bearing here:
+//
+// - `principal` maps to `null`, not to a lane. A tier may only ever move an
+//   agent DOWN from its configured primary model, never up. `null` (no tier
+//   declared) is the same case: the agent keeps its primary model.
+// - The value type is `WorkModelProfileKey | null`, so the reserved recovery
+//   lane `cheap` is not expressible here. Tier must never reach the recovery
+//   lane, because that lane means "status-only coordination, no deliverable
+//   work" (see `doc/execution-semantics.md` §9.3).
+export const AGENT_TIER_MODEL_PROFILES: Record<AgentTier, WorkModelProfileKey | null> = {
+  principal: null,
+  senior: "senior",
+  mid: "mid",
+  junior: "junior",
+};
+
+/**
+ * The default work lane an agent tier requests, or `null` when the tier does
+ * not move the agent off its configured primary model.
+ *
+ * Returns `null` for `principal`, for `null`/`undefined`, and for any value
+ * that is not a known tier.
+ */
+export function agentTierModelProfile(tier: string | null | undefined): WorkModelProfileKey | null {
+  return isAgentTier(tier) ? AGENT_TIER_MODEL_PROFILES[tier] : null;
+}
+
 export const AGENT_ICON_NAMES = [
   "bot",
   "cpu",

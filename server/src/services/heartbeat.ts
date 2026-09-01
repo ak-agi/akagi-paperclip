@@ -13,6 +13,7 @@ import {
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
   MODEL_PROFILE_KEYS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  agentTierModelProfile,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
   type BillingType,
@@ -2730,7 +2731,7 @@ interface ParsedIssueAssigneeAdapterOverrides {
   useProjectWorkspace: boolean | null;
 }
 
-type ModelProfileRequestSource = "issue_override" | "wake_context";
+type ModelProfileRequestSource = "issue_override" | "wake_context" | "agent_tier";
 type AppliedModelProfileConfigSource = "agent_runtime" | "adapter_default";
 
 export interface ModelProfileApplication {
@@ -3852,28 +3853,45 @@ export function resolveModelProfileApplication(input: {
   agentRuntimeConfig: unknown;
   issueModelProfile: ModelProfileKey | null | undefined;
   contextSnapshot: Record<string, unknown> | null | undefined;
+  /**
+   * `agents.tier` for the agent this run belongs to. It supplies the
+   * lowest-priority lane request; every explicit request outranks it.
+   */
+  agentTier?: string | null;
   profileResolutionFallbackReason?: string | null;
 }): ModelProfileApplication {
   const issueModelProfile = input.issueModelProfile ?? null;
   const contextModelProfile = readContextModelProfile(input.contextSnapshot);
+  const statusOnlyRecovery = isStatusOnlyRecoveryGuardContext(input.contextSnapshot);
   // A status-only recovery wake pins its own lane. The per-issue override must
   // not lift a status-only recovery run onto a work lane: the wake still
   // carries `allowDeliverableWork: false`, so honouring the override would run
   // status-only coordination on an expensive work lane and (before the guards
   // were re-keyed off `recoveryIntent`) overwrite the persisted context lane
   // that the §9.3 guards used to read. See `doc/execution-semantics.md` §9.3.
-  const recoveryPinnedModelProfile = contextModelProfile
-    && isStatusOnlyRecoveryGuardContext(input.contextSnapshot)
+  const recoveryPinnedModelProfile = contextModelProfile && statusOnlyRecovery
     ? contextModelProfile
     : null;
-  const requested = recoveryPinnedModelProfile ?? issueModelProfile ?? contextModelProfile;
+  // Lowest-priority request: the agent's tier default lane. `principal`, an
+  // undeclared tier and an unknown tier all map to `null`, which keeps the run
+  // on the agent's configured primary model exactly as before tiers existed.
+  //
+  // A guarded status-only recovery context suppresses the tier default outright
+  // rather than relying on that context always carrying a lane. The guards, not
+  // the lane key, define a status-only run; if such a context ever reaches
+  // resolution without a lane, the tier default must not step in and put an
+  // `allowDeliverableWork: false` run onto a work lane.
+  const tierModelProfile = statusOnlyRecovery ? null : agentTierModelProfile(input.agentTier);
+  const requested = recoveryPinnedModelProfile ?? issueModelProfile ?? contextModelProfile ?? tierModelProfile;
   const requestedBy: ModelProfileRequestSource | null = recoveryPinnedModelProfile
     ? "wake_context"
     : issueModelProfile
       ? "issue_override"
       : contextModelProfile
         ? "wake_context"
-        : null;
+        : tierModelProfile
+          ? "agent_tier"
+          : null;
 
   if (!requested) {
     return {
@@ -15125,6 +15143,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agentRuntimeConfig: agent.runtimeConfig,
       issueModelProfile: issueAssigneeOverrides?.modelProfile ?? null,
       contextSnapshot: context,
+      agentTier: agent.tier,
       profileResolutionFallbackReason,
     });
     const modelProfileMetadata = modelProfileRunMetadata(modelProfileApplication);
